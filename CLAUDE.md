@@ -79,19 +79,44 @@ One poll cycle:
 6. **Notify** via Telegram if the score is above threshold; persist everything,
    including items below threshold, so thresholds can be recalibrated.
 
-Planned modules (`src/ebay_sniper/`):
+Modules (`src/ebay_sniper/`; M1 is implemented, the others are planned):
 
 | Module | Responsibility |
 | --- | --- |
-| `config.py` | Load `config.toml` (tomllib) and `.env` (pydantic-settings); validate; compute API budget |
-| `ebay/auth.py` | OAuth client-credentials token, cached until shortly before expiry |
-| `ebay/browse.py` | `search` and `get_item`, typed models for the fields used, retries with backoff on 429/5xx |
-| `store.py` | SQLite (stdlib `sqlite3`): seen listings, verdicts, scores, notification state, labels |
-| `rules.py` | Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
-| `vision.py` | Lazy model load, image download with on-disk cache, embeddings, scoring |
-| `notify/telegram.py` | Bot API via httpx: photo or media group, caption, URL button |
+| `config.py` | Load `config.toml` (tomllib) and `.env` (pydantic-settings); validate (unknown keys rejected, paths resolved against the config directory); compute API budget |
+| `ebay/auth.py` | OAuth client-credentials token, cached in memory until shortly before expiry; `httpx.Auth` flow with one refresh on 401 |
+| `ebay/models.py` | Pydantic models for the Browse API fields used (no `seller`) |
+| `ebay/browse.py` | `search`, `search_raw` (sanitized, for fixtures) and `get_item`; retries with backoff on 429/5xx |
+| `models.py` | Domain objects: `Money`, `Listing` (built from an `ItemSummary`) |
+| `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings and notification state, established searches, runs with API usage |
+| `rules.py` | (M2) Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
+| `vision.py` | (M3) Lazy model load, image download with on-disk cache, embeddings, scoring |
+| `notify/base.py` | `Notifier` protocol and `NotificationError`, so the pipeline does not depend on Telegram |
+| `notify/telegram.py` | Bot API via httpx: photo with caption or silent album plus details message, URL button, fallback to text |
 | `pipeline.py` | One poll cycle wiring the steps above |
-| `cli.py` | `run-once`, `watch`, `check-config`; later `calibrate`, `digest` |
+| `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
+| `logsetup.py` | Logging to stderr with redaction of registered secrets (tracebacks included) |
+| `retry.py` | Backoff with jitter and `Retry-After` parsing |
+| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`; later `calibrate`, `digest` |
+
+Behaviour implemented in M1 worth knowing before changing it:
+
+- **Seeding**: the first successful run of a (query, marketplace) pair stores
+  its results as `seeded` without notifying them; only later cycles notify.
+  This also applies when a query or marketplace is added
+  (`runtime.seed_new_searches`).
+- **Dedup order**: marketplaces are searched in configuration order and the
+  first occurrence of a legacy id wins, so the first marketplace provides the
+  URL and the currency.
+- **Notification state**: `pending` until sent; a failure keeps it `pending`
+  (retried next cycle, failed ones sorted last), `failed` after 10 attempts;
+  above `max_notifications_per_cycle` the rest become `suppressed` and are
+  listed in one message. Two consecutive failures end the notification phase.
+- **Overlapping runs**: `runs` rows act as a lock; a `running` row younger than
+  30 minutes makes a new cycle skip.
+- **Secrets**: the Telegram token is in every Bot API URL. `TelegramClient`
+  never includes httpx exception texts in its errors, httpx loggers are set to
+  WARNING, and `logsetup` redacts registered secrets in every record.
 
 Design choices:
 
@@ -137,6 +162,31 @@ develop against production with low call volume.
   per new candidate. Example: 4 queries x 5 marketplaces every 20 minutes =
   1,440 calls per day.
 
+Verified against the Browse API OpenAPI contract v1.20.4 (not yet against live
+responses):
+
+- `q` is truncated beyond **100 characters** (a lost closing parenthesis would
+  change the query): `config.py` rejects longer queries, `*` and nested or
+  unbalanced parentheses. The documented OR form is "comma-separated keywords
+  surrounded by a single pair of parentheses"; queries with **two OR groups**
+  are not documented and must be checked live with `ebay-sniper search`.
+- `limit` max 200 (default 50); `offset` must be a multiple of `limit`.
+- `sort=newlyListed` sorts by `itemOriginDate`, which is **kept when a listing
+  is relisted**: on broad queries a relist can fall beyond the first page.
+- An invalid `X-EBAY-C-MARKETPLACE-ID` silently falls back to `EBAY_US`:
+  marketplaces are validated against a fixed list in `config.py`.
+- `price` is a `ConvertedAmount`: `value`/`currency` in the marketplace
+  currency, `convertedFromValue`/`convertedFromCurrency` with the seller's
+  original amount when eBay converted it.
+- `shippingOptions[].shippingCost` can be missing (`CALCULATED` shipping);
+  `getItem` adds `importCharges` for eBay's international shipping programs.
+- `seller.username` and `itemLocation` (street, city, postal code) are
+  returned: never store them. `getItem` also echoes the buyer's postal code in
+  `shipToLocationUsedForEstimate`; `sanitize_response` strips all of these.
+- `getItems` (batch of 20) is Limited Release: use single `getItem` calls.
+- HTTP 429 comes with `errorId` 2001; users report bursts of 429 well below the
+  daily limit, so keep retries with backoff and give up on long `Retry-After`.
+
 ## Filtering
 
 **Rules** (configured in `config.toml`, section `[rules]`):
@@ -181,8 +231,10 @@ develop against production with low call volume.
 
 ## Milestones
 
-- **M1**: config, auth, search, SQLite dedup, Telegram notification for every
-  new result, `run-once` and `check-config`, tests with respx fixtures.
+- **M1** (done): config, auth, search, SQLite dedup, Telegram notification for
+  every new result, `run-once` and `check-config`, tests with respx fixtures.
+  Still to do with real credentials: `check-config --live`, verify the OR
+  syntax with `search`, replace the synthetic fixtures with live ones.
 - **M2**: rules (`drop` / `flag`), total price with shipping, auction details.
 - **M3**: vision scoring, `calibrate`, thresholds, near-miss `digest`.
 - **M4**: Telegram feedback buttons feeding the labelled set.
@@ -196,9 +248,18 @@ develop against production with low call volume.
 uv sync                      # core + dev dependencies
 uv sync --extra vision       # adds torch, open_clip, pillow (M3)
 uv run ebay-sniper --help
+uv run ebay-sniper check-config [--live]
+uv run ebay-sniper search "<query>" -m EBAY_IT [--save-json tests/fixtures/x.json]
 uv run pytest
 uv run ruff check . && uv run ruff format .
 ```
+
+`uv sync` resolves the whole project, `vision` extra included, so it needs
+`download.pytorch.org`. Where that host is blocked (for example a sandbox
+with restricted egress), install core and dev tools without the lock:
+`uv venv && uv pip install -e . pytest respx ruff`. There is no `uv.lock` yet:
+generate it with `uv lock` on a machine that reaches the PyTorch index and
+commit it.
 
 On Linux, `pyproject.toml` pulls torch and torchvision from the PyTorch
 CPU-only index to avoid multi-gigabyte CUDA wheels. CPU is enough: only a few
@@ -207,7 +268,11 @@ images per new listing.
 ## Testing
 
 - No network access in tests: mock HTTP with `respx`, using sanitized fixtures
-  of real responses in `tests/fixtures/`.
+  of real responses in `tests/fixtures/`. The current fixtures are synthetic
+  (written from the OpenAPI contract, see `tests/fixtures/README.md`); capture
+  live ones with `search --save-json`.
+- Warnings are errors (`filterwarnings = ["error"]`). Test data builders live
+  in `tests/factories.py`; all credentials in tests are fake.
 - Unit-test rules and scoring logic with synthetic inputs; the vision model is
   not loaded in the default test run (mark those tests and skip them unless the
   `vision` extra is installed).

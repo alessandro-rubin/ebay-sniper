@@ -8,8 +8,12 @@ delivery_country = "IT"
 # TODO: set your own postal code.
 buyer_postal_code = "35100"
 buying_options = ["FIXED_PRICE", "AUCTION", "BEST_OFFER"]
+# One page per search, newest first (max 200).
 results_per_query = 100
-# eBay keyword syntax: space = AND, (a, b) = OR. Verify OR behaviour in M1.
+# eBay keyword syntax: space = AND, (a, b) = OR. At most 100 characters each:
+# the Browse API truncates longer queries. The documentation only shows one OR
+# group per query: check queries with two groups against the live API, e.g.
+#   uv run ebay-sniper search "(spider, spiderweb) (watch, quartz)" -m EBAY_US
 queries = [
     "futura (spider, spiderweb, spiderwebs, ragno, ragnatela, spinne, spinnennetz, araignee)",
     "(spider, spiderweb, spiderwebs) (watch, quartz)",
@@ -46,11 +50,23 @@ notify_threshold = 0.0
 
 [telegram]
 send_all_photos = true
+# Photos per notification (a Telegram album holds up to 10).
 max_photos = 4
+# Time zone used to show auction end times.
+timezone = "Europe/Rome"
 
 [runtime]
 poll_interval_minutes = 20
+# Relative paths are resolved against the directory of this file.
 database_path = "data/ebay_sniper.sqlite3"
 image_cache_dir = "data/image_cache"
-# Maximum share of the 5,000 daily Browse API calls the config may use.
+# Daily Browse API call limit of the application (5,000 unless eBay raised it).
+daily_call_limit = 5000
+# Maximum share of the daily limit the configuration may use.
 api_budget_share = 0.6
+# Individual notifications per cycle; the excess is listed in one message.
+max_notifications_per_cycle = 10
+# The first successful run of each (query, marketplace) pair records what is
+# already online without notifying it; later runs notify only new listings.
+# Adding a query or a marketplace seeds it the same way.
+seed_new_searches = true

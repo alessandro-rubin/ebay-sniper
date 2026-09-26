@@ -1,0 +1,104 @@
+{
+  "href": "https://api.ebay.com/buy/browse/v1/item_summary/search?q=futura+%28spider%2C+ragno%29&limit=100&sort=newlyListed&filter=buyingOptions%3A%7BFIXED_PRICE%7CAUCTION%7CBEST_OFFER%7D%2CdeliveryCountry%3AIT&offset=0",
+  "total": 3,
+  "limit": 100,
+  "offset": 0,
+  "itemSummaries": [
+    {
+      "itemId": "v1|110000000001|0",
+      "title": "Orologio Futura Quartz quadrante ragnatela madreperla vintage",
+      "leafCategoryIds": ["31387"],
+      "categories": [
+        {"categoryId": "31387", "categoryName": "Orologi da polso"},
+        {"categoryId": "260324", "categoryName": "Orologi, ricambi e accessori"}
+      ],
+      "image": {"imageUrl": "https://i.ebayimg.com/images/g/AAAAAAAAAAAAAAAA/s-l225.jpg"},
+      "price": {"value": "19.90", "currency": "EUR"},
+      "itemHref": "https://api.ebay.com/buy/browse/v1/item/v1%7C110000000001%7C0",
+      "seller": {
+        "username": "example_seller_it",
+        "feedbackPercentage": "100.0",
+        "feedbackScore": 42
+      },
+      "condition": "Usato",
+      "conditionId": "3000",
+      "thumbnailImages": [
+        {"imageUrl": "https://i.ebayimg.com/images/g/AAAAAAAAAAAAAAAA/s-l1600.jpg"}
+      ],
+      "shippingOptions": [
+        {
+          "shippingCostType": "FIXED",
+          "shippingCost": {"value": "6.50", "currency": "EUR"},
+          "minEstimatedDeliveryDate": "2026-10-01T07:00:00.000Z",
+          "maxEstimatedDeliveryDate": "2026-10-03T07:00:00.000Z"
+        }
+      ],
+      "buyingOptions": ["AUCTION"],
+      "currentBidPrice": {"value": "19.90", "currency": "EUR"},
+      "bidCount": 2,
+      "itemEndDate": "2026-09-29T19:30:00.000Z",
+      "itemWebUrl": "https://www.ebay.it/itm/110000000001",
+      "itemLocation": {"postalCode": "351**", "country": "IT"},
+      "additionalImages": [
+        {"imageUrl": "https://i.ebayimg.com/images/g/BBBBBBBBBBBBBBBB/s-l225.jpg"},
+        {"imageUrl": "https://i.ebayimg.com/images/g/CCCCCCCCCCCCCCCC/s-l225.jpg"}
+      ],
+      "adultOnly": false,
+      "legacyItemId": "110000000001",
+      "availableCoupons": false,
+      "itemOriginDate": "2026-09-26T08:15:00.000Z",
+      "itemCreationDate": "2026-09-26T08:15:00.000Z",
+      "topRatedBuyingExperience": false,
+      "priorityListing": false,
+      "listingMarketplaceId": "EBAY_IT"
+    },
+    {
+      "itemId": "v1|120000000002|0",
+      "title": "Vintage Futura Quartz Spider Web MOP Dial Watch Japan Movt <RARE> & Unique",
+      "leafCategoryIds": ["31387"],
+      "image": {"imageUrl": "https://i.ebayimg.com/images/g/DDDDDDDDDDDDDDDD/s-l225.jpg"},
+      "price": {
+        "value": "85.10",
+        "currency": "EUR",
+        "convertedFromValue": "99.00",
+        "convertedFromCurrency": "USD"
+      },
+      "itemHref": "https://api.ebay.com/buy/browse/v1/item/v1%7C120000000002%7C0",
+      "seller": {
+        "username": "example_seller_us",
+        "feedbackPercentage": "99.5",
+        "feedbackScore": 1234
+      },
+      "condition": "Pre-owned",
+      "conditionId": "3000",
+      "shippingOptions": [{"shippingCostType": "CALCULATED"}],
+      "buyingOptions": ["FIXED_PRICE", "BEST_OFFER"],
+      "itemWebUrl": "https://www.ebay.it/itm/120000000002",
+      "itemAffiliateWebUrl": "https://www.ebay.it/itm/120000000002?mkcid=1&campid=0000000000",
+      "itemLocation": {"postalCode": "100**", "country": "US"},
+      "legacyItemId": "120000000002",
+      "itemOriginDate": "2026-09-25T21:00:00.000Z",
+      "itemCreationDate": "2026-09-25T21:00:00.000Z",
+      "listingMarketplaceId": "EBAY_US"
+    },
+    {
+      "itemId": "v1|130000000003|0",
+      "title": "Montre araign\u00e9e quartz femme ancienne",
+      "image": {"imageUrl": "https://i.ebayimg.com/images/g/EEEEEEEEEEEEEEEE/s-l225.jpg"},
+      "price": {"value": "12.00", "currency": "EUR"},
+      "condition": "Pour pi\u00e8ces d\u00e9tach\u00e9es ou ne fonctionne pas",
+      "conditionId": "7000",
+      "shippingOptions": [
+        {"shippingCostType": "FIXED", "shippingCost": {"value": "9.00", "currency": "EUR"}},
+        {"shippingCostType": "FIXED", "shippingCost": {"value": "4.99", "currency": "EUR"}}
+      ],
+      "buyingOptions": ["FIXED_PRICE"],
+      "itemWebUrl": "https://www.ebay.it/itm/130000000003",
+      "itemLocation": {"country": "FR"},
+      "legacyItemId": "130000000003",
+      "itemOriginDate": "2026-09-24T10:00:00.000Z",
+      "itemCreationDate": "2026-09-24T10:00:00.000Z",
+      "listingMarketplaceId": "EBAY_FR"
+    }
+  ]
+}

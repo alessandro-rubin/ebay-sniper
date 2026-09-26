@@ -1,0 +1,47 @@
+{
+  "href": "https://api.ebay.com/buy/browse/v1/item_summary/search?q=futura+%28spider%2C+ragno%29&limit=100&sort=newlyListed&filter=buyingOptions%3A%7BFIXED_PRICE%7CAUCTION%7CBEST_OFFER%7D%2CdeliveryCountry%3AIT&offset=0",
+  "total": 2,
+  "limit": 100,
+  "offset": 0,
+  "itemSummaries": [
+    {
+      "itemId": "v1|140000000004|0",
+      "title": "Damen Armbanduhr Spinnennetz Zifferblatt Quarz",
+      "image": {"imageUrl": "https://i.ebayimg.com/images/g/FFFFFFFFFFFFFFFF/s-l225.jpg"},
+      "price": {"value": "35.00", "currency": "EUR"},
+      "condition": "Gebraucht",
+      "conditionId": "3000",
+      "shippingOptions": [
+        {"shippingCostType": "FIXED", "shippingCost": {"value": "0.00", "currency": "EUR"}}
+      ],
+      "buyingOptions": ["FIXED_PRICE"],
+      "itemWebUrl": "https://www.ebay.de/itm/140000000004",
+      "itemLocation": {"postalCode": "80***", "country": "DE"},
+      "legacyItemId": "140000000004",
+      "itemOriginDate": "2026-09-26T09:40:00.000Z",
+      "itemCreationDate": "2026-09-26T09:40:00.000Z",
+      "listingMarketplaceId": "EBAY_DE"
+    },
+    {
+      "itemId": "v1|110000000001|0",
+      "title": "Orologio Futura Quartz quadrante ragnatela madreperla vintage",
+      "image": {"imageUrl": "https://i.ebayimg.com/images/g/AAAAAAAAAAAAAAAA/s-l225.jpg"},
+      "price": {"value": "19.90", "currency": "EUR"},
+      "condition": "Gebraucht",
+      "conditionId": "3000",
+      "shippingOptions": [
+        {"shippingCostType": "FIXED", "shippingCost": {"value": "6.50", "currency": "EUR"}}
+      ],
+      "buyingOptions": ["AUCTION"],
+      "currentBidPrice": {"value": "19.90", "currency": "EUR"},
+      "bidCount": 2,
+      "itemEndDate": "2026-09-29T19:30:00.000Z",
+      "itemWebUrl": "https://www.ebay.de/itm/110000000001",
+      "itemLocation": {"country": "IT"},
+      "legacyItemId": "110000000001",
+      "itemOriginDate": "2026-09-26T08:15:00.000Z",
+      "itemCreationDate": "2026-09-26T08:15:00.000Z",
+      "listingMarketplaceId": "EBAY_IT"
+    }
+  ]
+}

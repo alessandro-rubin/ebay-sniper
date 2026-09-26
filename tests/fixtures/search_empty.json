@@ -1,0 +1,6 @@
+{
+  "href": "https://api.ebay.com/buy/browse/v1/item_summary/search?q=futura+spider&limit=100&sort=newlyListed&filter=buyingOptions%3A%7BFIXED_PRICE%7CAUCTION%7CBEST_OFFER%7D%2CdeliveryCountry%3AIT&offset=0",
+  "total": 0,
+  "limit": 100,
+  "offset": 0
+}

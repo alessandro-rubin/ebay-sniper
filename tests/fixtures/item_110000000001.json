@@ -1,0 +1,50 @@
+{
+  "itemId": "v1|110000000001|0",
+  "title": "Orologio Futura Quartz quadrante ragnatela madreperla vintage",
+  "shortDescription": "Orologio vintage Futura Quartz, quadrante in madreperla con ragnatela.",
+  "price": {"value": "19.90", "currency": "EUR"},
+  "categoryPath": "Orologi e gioielli|Orologi|Orologi da polso",
+  "categoryIdPath": "281|260324|31387",
+  "condition": "Usato",
+  "conditionId": "3000",
+  "conditionDescription": "Funzionante, vetro con piccoli graffi, batteria nuova.",
+  "itemLocation": {"city": "Padova", "postalCode": "351**", "country": "IT"},
+  "image": {"imageUrl": "https://i.ebayimg.com/images/g/AAAAAAAAAAAAAAAA/s-l1600.jpg"},
+  "additionalImages": [
+    {"imageUrl": "https://i.ebayimg.com/images/g/BBBBBBBBBBBBBBBB/s-l1600.jpg"},
+    {"imageUrl": "https://i.ebayimg.com/images/g/CCCCCCCCCCCCCCCC/s-l1600.jpg"},
+    {"imageUrl": "https://i.ebayimg.com/images/g/GGGGGGGGGGGGGGGG/s-l1600.jpg"}
+  ],
+  "currentBidPrice": {"value": "19.90", "currency": "EUR"},
+  "minimumPriceToBid": {"value": "20.40", "currency": "EUR"},
+  "reservePriceMet": true,
+  "uniqueBidderCount": 2,
+  "bidCount": 2,
+  "itemEndDate": "2026-09-29T19:30:00.000Z",
+  "itemCreationDate": "2026-09-26T08:15:00.000Z",
+  "seller": {
+    "username": "example_seller_it",
+    "feedbackPercentage": "100.0",
+    "feedbackScore": 42
+  },
+  "estimatedAvailabilities": [
+    {"deliveryOptions": ["SHIP_TO_HOME"], "estimatedAvailabilityStatus": "IN_STOCK"}
+  ],
+  "shippingOptions": [
+    {
+      "shippingServiceCode": "Poste Italiane Posta4",
+      "type": "Standard Shipping",
+      "shippingCost": {"value": "6.50", "currency": "EUR"},
+      "quantityUsedForEstimate": 1,
+      "minEstimatedDeliveryDate": "2026-10-01T07:00:00.000Z",
+      "maxEstimatedDeliveryDate": "2026-10-03T07:00:00.000Z",
+      "shipToLocationUsedForEstimate": {"country": "IT", "postalCode": "35100"},
+      "shippingCostType": "FIXED"
+    }
+  ],
+  "description": "<p>Orologio da donna Futura Quartz anni 90, cassa asimmetrica.</p>",
+  "buyingOptions": ["AUCTION"],
+  "itemWebUrl": "https://www.ebay.it/itm/110000000001",
+  "legacyItemId": "110000000001",
+  "listingMarketplaceId": "EBAY_IT"
+}
