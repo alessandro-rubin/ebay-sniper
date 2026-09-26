@@ -79,7 +79,7 @@ One poll cycle:
 6. **Notify** via Telegram if the score is above threshold; persist everything,
    including items below threshold, so thresholds can be recalibrated.
 
-Modules (`src/ebay_sniper/`; M1 is implemented, the others are planned):
+Modules (`src/ebay_sniper/`; M1 and M2 are implemented, the others are planned):
 
 | Module | Responsibility |
 | --- | --- |
@@ -87,9 +87,9 @@ Modules (`src/ebay_sniper/`; M1 is implemented, the others are planned):
 | `ebay/auth.py` | OAuth client-credentials token, cached in memory until shortly before expiry; `httpx.Auth` flow with one refresh on 401 |
 | `ebay/models.py` | Pydantic models for the Browse API fields used (no `seller`) |
 | `ebay/browse.py` | `search`, `search_raw` (sanitized, for fixtures) and `get_item`; retries with backoff on 429/5xx |
-| `models.py` | Domain objects: `Money`, `Listing` (built from an `ItemSummary`) |
-| `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings and notification state, established searches, runs with API usage |
-| `rules.py` | (M2) Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
+| `models.py` | Domain objects: `Money`, `CurrencyConverter`, `Verdict`, `Listing` (built from an `ItemSummary`, merged with `getItem`, `total` = item or current bid + shipping + import charges) |
+| `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings with details, verdict and notification state, established searches, runs with API usage |
+| `rules.py` | Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
 | `vision.py` | (M3) Lazy model load, image download with on-disk cache, embeddings, scoring |
 | `notify/base.py` | `Notifier` protocol and `NotificationError`, so the pipeline does not depend on Telegram |
 | `notify/telegram.py` | Bot API via httpx: photo with caption or silent album plus details message, URL button, fallback to text |
@@ -99,7 +99,23 @@ Modules (`src/ebay_sniper/`; M1 is implemented, the others are planned):
 | `retry.py` | Backoff with jitter and `Retry-After` parsing |
 | `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`; later `calibrate`, `digest` |
 
-Behaviour implemented in M1 worth knowing before changing it:
+Behaviour implemented in M1 and M2 worth knowing before changing it:
+
+- **Rules** run on every new listing, seeded ones included (for later
+  review). `drop` goes to status `dropped` (never notified, kept with its
+  reasons), otherwise the listing is a candidate. Candidates, newest first, get
+  one `getItem` each up to `runtime.max_details_per_cycle`; the rules then run
+  again with the condition notes and the precise total. Beyond the cap, on a
+  `getItem` error or on a 404 (possibly a listing not yet visible to getItem),
+  the listing is notified with search data (and a warning for the 404):
+  never trade a notification for completeness.
+- **Keyword matching**: NFKD + casefold, accents stripped, punctuation
+  ignored, whole words, trailing `*` for prefixes. A drop keyword with a
+  negation among the three preceding words only flags. Only the title and
+  `conditionDescription` are checked, never the full description.
+- **Price cap**: `Listing.total` in the marketplace currency, converted with
+  `price.exchange_rates`; without a rate the listing is flagged, not dropped.
+  Auctions use the current bid.
 
 - **Seeding**: the first successful run of a (query, marketplace) pair stores
   its results as `seeded` without notifying them; only later cycles notify.
@@ -235,7 +251,11 @@ responses):
   every new result, `run-once` and `check-config`, tests with respx fixtures.
   Still to do with real credentials: `check-config --live`, verify the OR
   syntax with `search`, replace the synthetic fixtures with live ones.
-- **M2**: rules (`drop` / `flag`), total price with shipping, auction details.
+- **M2** (done): rules (`drop` / `flag`), total price with shipping and import
+  charges, auction details (bids, next minimum bid, reserve, end time),
+  `getItem` details for candidates. Possible follow-up: re-evaluate listings
+  dropped for their price when a later search shows a lower price (today a
+  price drop below the cap goes unnoticed).
 - **M3**: vision scoring, `calibrate`, thresholds, near-miss `digest`.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
@@ -283,3 +303,8 @@ images per new listing.
 - Maximum total price.
 - Which machine will run the bot, and at what poll interval.
 - Which marketplaces to include (default: IT, DE, FR, GB, US).
+- The keyword lists in `config.toml` are a first multilingual draft: review
+  them, especially the drop list (a wrong drop can cost the item).
+- `buyer_postal_code` is committed with `config.toml`: a generic postal code
+  of the area is enough for shipping estimates if the repository is shared.
+- `price.exchange_rates` are approximate values written in September 2026.

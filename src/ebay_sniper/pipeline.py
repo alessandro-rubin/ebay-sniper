@@ -1,4 +1,4 @@
-"""One poll cycle: search, deduplicate, persist, notify.
+"""One poll cycle: search, deduplicate, rules, details, notify.
 
 The cycle is idempotent: listings are keyed by their legacy item id, so running
 it twice in a row notifies nothing new the second time. A notification that
@@ -16,9 +16,10 @@ from typing import Protocol
 
 from ebay_sniper.config import AppConfig
 from ebay_sniper.ebay.browse import EbayApiError
-from ebay_sniper.ebay.models import SearchPage
-from ebay_sniper.models import Listing
+from ebay_sniper.ebay.models import ItemDetails, SearchPage
+from ebay_sniper.models import Listing, Verdict
 from ebay_sniper.notify.base import NotificationError, Notifier
+from ebay_sniper.rules import RuleEngine
 from ebay_sniper.store import ListingStatus, RunStatus, Store
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,8 @@ class Searcher(Protocol):
         self, query: str, marketplace: str, *, limit: int, buying_options: Sequence[str]
     ) -> SearchPage: ...
 
+    def get_item(self, item_id: str, marketplace: str) -> ItemDetails | None: ...
+
 
 class CycleError(RuntimeError):
     """The cycle could not do its job, for example because every search failed."""
@@ -58,8 +61,15 @@ class CycleReport:
     searches_failed: int = 0
     new_searches: int = 0
     results: int = 0
+    # New listings from searches that ran before (candidates for notification).
     new: int = 0
     seeded: int = 0
+    dropped: int = 0
+    details: int = 0
+    details_failed: int = 0
+    details_skipped: int = 0
+    # getItem answered 404: notified anyway with a warning.
+    gone: int = 0
     notified: int = 0
     notify_failed: int = 0
     suppressed: int = 0
@@ -69,7 +79,7 @@ class CycleReport:
 
     @property
     def status(self) -> RunStatus:
-        if self.searches_failed or self.notify_failed:
+        if self.searches_failed or self.details_failed or self.notify_failed:
             return RunStatus.PARTIAL
         return RunStatus.OK
 
@@ -79,9 +89,11 @@ class CycleReport:
         searches = self.searches_ok + self.searches_failed
         return (
             f"{self.searches_ok}/{searches} searches ok, {self.results} results, "
-            f"{self.new} new, {self.seeded} seeded, {self.notified} notified, "
-            f"{self.notify_failed} notification failures, {self.suppressed} suppressed, "
-            f"{self.api_calls} API calls"
+            f"{self.new} new, {self.seeded} seeded, {self.dropped} dropped, "
+            f"{self.details} details ({self.details_failed} failed, "
+            f"{self.details_skipped} skipped, {self.gone} not found), "
+            f"{self.notified} notified, {self.notify_failed} notification failures, "
+            f"{self.suppressed} suppressed, {self.api_calls} API calls"
         )
 
 
@@ -100,6 +112,7 @@ class Pipeline:
         self._store = store
         self._notifier = notifier
         self._clock = clock
+        self._rules = RuleEngine(config.rules, config.price)
 
     def run_cycle(self) -> CycleReport:
         report = CycleReport()
@@ -111,7 +124,8 @@ class Pipeline:
         calls_before = self._searcher.calls
         status, error = RunStatus.FAILED, None
         try:
-            self._search_phase(report)
+            candidates = self._search_phase(report)
+            self._details_phase(candidates, report)
             self._notify_phase(report)
             status = report.status
         except Exception as exc:
@@ -127,12 +141,17 @@ class Pipeline:
                 results=report.results,
                 new_listings=report.new,
                 notified=report.notified,
+                dropped=report.dropped,
                 error=error,
             )
         log.info("Cycle done: %s", report.summary())
         return report
 
-    def _search_phase(self, report: CycleReport) -> None:
+    def _search_phase(self, report: CycleReport) -> list[Listing]:
+        """Search, deduplicate, apply the rules to the search data and persist.
+
+        Returns the new listings that passed the rules, newest first.
+        """
         search = self._config.search
         seed = self._config.runtime.seed_new_searches
         established = self._store.established_searches()
@@ -171,16 +190,27 @@ class Pipeline:
             raise CycleError(f"all {report.searches_failed} searches failed")
 
         known = self._store.known_ids(found)
-        new = [
-            (
-                listing,
-                ListingStatus.PENDING if listing_id in notify_ids else ListingStatus.SEEDED,
-            )
-            for listing_id, listing in found.items()
-            if listing_id not in known
-        ]
-        report.new = sum(status is ListingStatus.PENDING for _, status in new)
-        report.seeded = len(new) - report.new
+        new: list[tuple[Listing, ListingStatus]] = []
+        candidates: list[Listing] = []
+        for listing_id, found_listing in found.items():
+            if listing_id in known:
+                continue
+            # The rules are cheap: seeded listings get a verdict too, for review.
+            result = self._rules.evaluate(found_listing)
+            listing = found_listing.with_verdict(result.verdict, result.reasons)
+            if listing_id not in notify_ids:
+                status = ListingStatus.SEEDED
+                report.seeded += 1
+            elif result.verdict is Verdict.DROP:
+                status = ListingStatus.DROPPED
+                report.new += 1
+                report.dropped += 1
+                log.info("Dropped %s %r: %s", listing_id, listing.title, "; ".join(result.reasons))
+            else:
+                status = ListingStatus.PENDING
+                report.new += 1
+                candidates.append(listing)
+            new.append((listing, status))
         self._store.save_cycle(self._clock(), new=new, seen=known, searches=completed)
         if report.new_searches:
             log.info(
@@ -188,6 +218,55 @@ class Pipeline:
                 report.new_searches,
                 report.seeded,
             )
+        return sorted(candidates, key=_newest_first)
+
+    def _details_phase(self, candidates: Sequence[Listing], report: CycleReport) -> None:
+        """getItem for new candidates: all photos, condition notes, precise shipping.
+
+        Beyond the per-cycle cap, or when getItem fails, a listing is notified
+        with its search data only: a late notification could cost the item.
+        """
+        limit = self._config.runtime.max_details_per_cycle
+        if len(candidates) > limit:
+            report.details_skipped = len(candidates) - limit
+            log.warning(
+                "%d new listing(s) exceed the details limit of %d per cycle and will be "
+                "notified with search data only",
+                report.details_skipped,
+                limit,
+            )
+        for listing in candidates[:limit]:
+            try:
+                details = self._searcher.get_item(listing.item_id, listing.marketplace)
+            except EbayApiError as exc:
+                report.details_failed += 1
+                log.error("Could not fetch the details of %s: %s", listing.listing_id, exc)
+                continue
+            report.details += 1
+            if details is None:
+                # Usually the listing ended in the meantime, but a new listing
+                # can also be missing briefly: notify it anyway, with a warning.
+                report.gone += 1
+                log.warning("getItem found no listing %s, notifying search data", listing.url)
+                reasons = (*listing.reasons, "details not found: the listing may have ended")
+                self._store.update_listing(
+                    listing.with_verdict(Verdict.FLAG, reasons), ListingStatus.PENDING
+                )
+                continue
+            detailed = listing.with_details(details)
+            result = self._rules.evaluate(detailed)
+            detailed = detailed.with_verdict(result.verdict, result.reasons)
+            if result.verdict is Verdict.DROP:
+                report.dropped += 1
+                log.info(
+                    "Dropped %s %r after details: %s",
+                    listing.listing_id,
+                    detailed.title,
+                    "; ".join(result.reasons),
+                )
+                self._store.update_listing(detailed, ListingStatus.DROPPED)
+            else:
+                self._store.update_listing(detailed, ListingStatus.PENDING)
 
     def _notify_phase(self, report: CycleReport) -> None:
         if report.new_searches and self._config.runtime.seed_new_searches:
@@ -237,6 +316,10 @@ class Pipeline:
             log.error("Could not send a service message: %s", exc)
 
 
+def _newest_first(listing: Listing) -> float:
+    return -listing.origin_date.timestamp() if listing.origin_date else 0.0
+
+
 def format_overflow(listings: Sequence[Listing], cap: int) -> str:
     """One message listing what exceeded the per-cycle notification cap."""
     lines = [
@@ -245,7 +328,8 @@ def format_overflow(listings: Sequence[Listing], cap: int) -> str:
     for listing in listings[:MAX_SUMMARY_ENTRIES]:
         title = html.escape(listing.title, quote=False)
         price = f" - {listing.price}" if listing.price is not None else ""
-        lines.append(f'- <a href="{html.escape(listing.url)}">{title}</a>{price}')
+        flag = " [check]" if listing.verdict is Verdict.FLAG else ""
+        lines.append(f'- <a href="{html.escape(listing.url)}">{title}</a>{price}{flag}')
     if len(listings) > MAX_SUMMARY_ENTRIES:
         lines.append(f"... and {len(listings) - MAX_SUMMARY_ENTRIES} more.")
     return "\n".join(lines)

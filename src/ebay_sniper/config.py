@@ -155,13 +155,40 @@ def validate_query(query: str) -> None:
 
 class PriceConfig(_Section):
     currency: str = Field(default="EUR", pattern=r"^[A-Z]{3}$")
+    # Maximum total (item + shipping + import charges) in `currency`.
     max_total: Decimal = Field(gt=0)
+    # Approximate value of one unit of each other currency in `currency`, used
+    # only to compare totals with `max_total`.
+    exchange_rates: dict[str, Decimal] = Field(default_factory=dict)
+
+    @field_validator("exchange_rates")
+    @classmethod
+    def _check_rates(cls, value: dict[str, Decimal]) -> dict[str, Decimal]:
+        for code, rate in value.items():
+            if not (len(code) == 3 and code.isascii() and code.isupper()):
+                raise ValueError(f"not an ISO 4217 currency code: {code!r}")
+            if rate <= 0:
+                raise ValueError(f"exchange rate for {code} must be positive")
+        return value
 
 
 class RulesConfig(_Section):
+    # Whole words or phrases, case- and accent-insensitive; a trailing * matches
+    # word prefixes. Checked in the title and in the seller's condition notes.
     drop_keywords: list[str] = Field(default_factory=list)
     flag_keywords: list[str] = Field(default_factory=list)
     flag_condition_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("drop_keywords", "flag_keywords")
+    @classmethod
+    def _check_keywords(cls, value: list[str]) -> list[str]:
+        for keyword in value:
+            body = keyword.strip()
+            if not any(char.isalnum() for char in body):
+                raise ValueError(f"keyword without letters or digits: {keyword!r}")
+            if "*" in body.rstrip("*") or body.endswith("**"):
+                raise ValueError(f"* is only allowed once, at the end: {keyword!r}")
+        return value
 
 
 class VisionConfig(_Section):
@@ -207,6 +234,9 @@ class RuntimeConfig(_Section):
     # Hard cap on individual notifications per cycle; the excess is summarised
     # in a single message instead of flooding the chat.
     max_notifications_per_cycle: int = Field(default=10, ge=1)
+    # getItem calls per cycle for new listings that survive the rules; beyond
+    # it, listings are notified with the search data only. 0 disables details.
+    max_details_per_cycle: int = Field(default=10, ge=0)
     # The first successful search of a (query, marketplace) pair only records the
     # results already online, without notifying them. Later cycles notify what
     # is really new. This also applies when a query or marketplace is added.
@@ -327,11 +357,13 @@ class ApiBudget:
 
 
 def compute_budget(config: AppConfig) -> ApiBudget:
-    """One search call per (query, marketplace) per cycle: results fit in one page."""
+    """One search call per (query, marketplace) per cycle, since results fit in one
+    page, plus the getItem cap. Retries are not counted.
+    """
     return ApiBudget(
         cycles_per_day=math.ceil(MINUTES_PER_DAY / config.runtime.poll_interval_minutes),
         search_calls_per_cycle=len(config.search.queries) * len(config.search.marketplaces),
-        detail_calls_per_cycle=0,
+        detail_calls_per_cycle=config.runtime.max_details_per_cycle,
         daily_limit=config.runtime.daily_call_limit,
         share=config.runtime.api_budget_share,
     )

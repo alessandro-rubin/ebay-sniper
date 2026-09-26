@@ -23,19 +23,53 @@ queries = [
 
 [price]
 currency = "EUR"
-# TODO: maximum total price (item + shipping). Items above it are dropped.
+# TODO: maximum total (item or current bid + shipping + import charges, when
+# known). Listings above it are dropped.
 max_total = 400
+# Approximate value of one unit in EUR, only used to compare totals in other
+# currencies with max_total (EBAY_GB returns GBP, EBAY_US returns USD). Without
+# a rate the cap is not checked and the listing is flagged. Update occasionally.
+exchange_rates = { USD = 0.86, GBP = 1.15 }
 
 [rules]
-# Dropped when found in title or condition description (case/accent-insensitive).
+# Whole words or phrases, case- and accent-insensitive (write keywords without
+# accents: they also match accented text); a trailing * matches word prefixes.
+# Checked in the title and in the seller's condition notes, never in the full
+# description.
+#
+# Dropped: clear physical damage only, since a wrong drop can cost the item.
+# Preceded by a negation ("no cracked crystal", "senza vetro rotto") they only
+# flag the listing.
 drop_keywords = [
-    "cracked crystal", "broken crystal", "vetro rotto", "vetro crepato",
-    "missing hand", "lancetta mancante", "glas gebrochen", "verre casse",
+    # EN
+    "cracked crystal", "broken crystal", "cracked glass", "broken glass",
+    "missing hand*", "broken lug*", "broken case",
+    # IT
+    "vetro rotto", "vetro crepato", "vetro incrinato", "vetrino rotto",
+    "lancetta mancante", "lancette mancanti", "ansa rotta", "anse rotte", "cassa rotta",
+    # DE
+    "glas gebrochen", "glas gesprungen", "glas kaputt", "zeiger fehlt", "zeiger fehlen",
+    # FR
+    "verre casse", "verre fele", "aiguille manquante", "aiguilles manquantes",
+    # ES
+    "cristal roto", "cristal rajado", "aguja rota", "agujas rotas",
 ]
-# Notified with a warning, not dropped: on a quartz watch often just the battery.
+# Notified with a warning, not dropped: on a quartz watch it is often just the
+# battery. Prefixes over-flag a little ("defekt*" also matches "defektfrei"),
+# which only costs a warning.
 flag_keywords = [
-    "not working", "non funzionante", "for parts", "per ricambi",
-    "needs battery", "batteria scarica", "defekt", "ne fonctionne pas",
+    # EN
+    "not working", "non working", "for parts", "for repair", "needs battery",
+    "needs repair", "untested", "as is",
+    # IT
+    "non funzionante", "non funziona", "per ricambi", "da riparare", "da revisionare",
+    "batteria scarica", "non testato",
+    # DE: write an umlaut as its plain vowel ("gepruft"); "geprueft" is another word
+    "defekt*", "ersatzteil*", "bastler*", "reparatur*", "batterie leer",
+    # FR
+    "ne fonctionne pas", "hors service", "pour pieces", "a reparer", "pile a changer",
+    # ES
+    "no funciona", "para piezas", "para reparar", "averiado", "pila agotada",
 ]
 # eBay condition 7000 = for parts or not working.
 flag_condition_ids = [7000]
@@ -66,6 +100,10 @@ daily_call_limit = 5000
 api_budget_share = 0.6
 # Individual notifications per cycle; the excess is listed in one message.
 max_notifications_per_cycle = 10
+# getItem calls per cycle (all photos, condition notes, precise shipping) for
+# new listings that pass the rules; the rest are notified with search data.
+# Counted in the API budget as a worst case.
+max_details_per_cycle = 10
 # The first successful run of each (query, marketplace) pair records what is
 # already online without notifying it; later runs notify only new listings.
 # Adding a query or a marketplace seeds it the same way.

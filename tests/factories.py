@@ -18,6 +18,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+ITEM_URL = "https://api.ebay.com/buy/browse/v1/item"
 
 ENV_FILE_CONTENT = (
     f"EBAY_CLIENT_ID={EBAY_CLIENT_ID}\n"
@@ -41,6 +42,12 @@ queries = [
 [price]
 currency = "EUR"
 max_total = 400
+exchange_rates = { USD = 0.86 }
+
+[rules]
+drop_keywords = ["cracked crystal", "vetro rotto", "missing hand*"]
+flag_keywords = ["needs battery", "defekt"]
+flag_condition_ids = [7000]
 
 [telegram]
 send_all_photos = true

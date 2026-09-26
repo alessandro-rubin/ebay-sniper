@@ -17,6 +17,7 @@ from ebay_sniper.logsetup import RedactingFormatter, register_secrets
 from factories import (
     CONFIG_TOML,
     EBAY_CLIENT_SECRET,
+    ITEM_URL,
     SEARCH_URL,
     TELEGRAM_API,
     TELEGRAM_BOT_TOKEN,
@@ -90,8 +91,8 @@ def test_check_config(config_path: Path, env_path: Path, capsys: pytest.CaptureF
     out = capsys.readouterr().out
     assert "Marketplaces (2): EBAY_IT, EBAY_DE" in out
     assert "   22  futura (spider, ragno)" in out
-    assert "288 search + 0 item details = 288" in out
-    assert "Budget: OK, 288 of 3000 allowed (60% of the 5000 daily limit)" in out
+    assert "288 search + 720 item details = 1008" in out
+    assert "Budget: OK, 1008 of 3000 allowed (60% of the 5000 daily limit)" in out
     assert "test.sqlite3 (not created yet)" in out
     assert "Secrets: all present" in out
 
@@ -182,14 +183,35 @@ def test_run_once_end_to_end(
     assert "Started watching 4 new search(es). 4 listing(s) already online" in first
     assert (config_path.parent / "data" / "test.sqlite3").exists()
 
-    # Second run: one new listing appears in another search.
-    pages[(Q2, "EBAY_IT")] = make_page_data(make_item("150000000005", title="Spider web watch"))
+    # Second run: three new listings appear in another search. The rules drop
+    # one on its title; getItem runs for the other two, and the condition
+    # notes drop one of them and only flag the other (negated keyword).
+    pages[(Q2, "EBAY_IT")] = make_page_data(
+        make_item("150000000005", title="Spider web watch"),
+        make_item("150000000006", title="Spider watch, cracked crystal"),
+        make_item("150000000007", title="Spider web quartz watch"),
+    )
+    notes = {
+        "150000000005": "Perfetto, nessun vetro rotto.",
+        "150000000007": "Vetro rotto, cassa ok.",
+    }
+
+    def item_responder(request: httpx.Request) -> httpx.Response:
+        # The path is sent encoded (v1%7C...%7C0); httpx exposes it decoded.
+        assert b"%7C" in request.url.raw_path
+        listing_id = request.url.path.split("|")[1]
+        item = make_item(listing_id, conditionDescription=notes[listing_id])
+        return httpx.Response(200, json=item)
+
+    get_item = respx_mock.get(url__startswith=f"{ITEM_URL}/").mock(side_effect=item_responder)
     assert run(config_path, "run-once") == 0
+    assert get_item.call_count == 2
     assert telegram_methods(telegram) == ["sendMessage", "sendPhoto"]
     photo = json.loads(telegram.calls.last.request.content)
     assert photo["reply_markup"]["inline_keyboard"][0][0]["url"] == (
         "https://www.ebay.it/itm/150000000005"
     )
+    assert "<b>Check:</b> negated 'vetro rotto' in condition notes" in photo["caption"]
 
     # Third run: nothing new, nothing sent.
     assert run(config_path, "run-once") == 0
@@ -197,13 +219,15 @@ def test_run_once_end_to_end(
     assert token.call_count == 3  # one process per run: the token is not stored on disk
     err = capsys.readouterr().err
     assert "Cycle done" in err
+    assert "Dropped 150000000006" in err
+    assert "Dropped 150000000007" in err
     assert TELEGRAM_BOT_TOKEN not in err
 
     # check-config reports the real usage recorded by the runs.
     assert run(config_path, "check-config") == 0
     out = capsys.readouterr().out
-    assert "Browse API calls in the last 24 hours: 12" in out
-    assert "Listings: 1 notified, 4 seeded" in out
+    assert "Browse API calls in the last 24 hours: 14" in out
+    assert "Listings: 2 dropped, 1 notified, 4 seeded" in out
 
 
 def test_run_once_fails_on_rejected_credentials(
@@ -270,8 +294,9 @@ def test_search_command(
     assert route.calls.last.request.url.params["limit"] == "5"
     out = capsys.readouterr().out
     assert "EBAY_IT: 3 matching listings, showing 3" in out
-    assert "19.90 EUR  AUCTION" in out
+    assert "26.40 EUR  AUCTION" in out
     assert "https://www.ebay.it/itm/120000000002" in out
+    assert "FLAG: condition 7000" in out
     assert "Browse API calls used: 1" in out
     text = saved.read_text(encoding="utf-8")
     assert "example_seller" not in text

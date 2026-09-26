@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -11,8 +12,8 @@ import respx
 from pydantic import SecretStr
 
 from ebay_sniper.config import TelegramConfig
-from ebay_sniper.ebay.models import SearchPage
-from ebay_sniper.models import Listing, Money
+from ebay_sniper.ebay.models import ItemDetails, SearchPage
+from ebay_sniper.models import CurrencyConverter, Listing, Money, Verdict
 from ebay_sniper.notify.telegram import (
     TelegramClient,
     TelegramError,
@@ -57,24 +58,63 @@ def test_format_auction() -> None:
     text = format_listing(auction, tz=ROME, now=NOW)
     assert text.splitlines() == [
         "<b>Orologio Futura Quartz quadrante ragnatela madreperla vintage</b>",
+        "Total: 26.40 EUR (current bid + shipping)",
         "Price: 19.90 EUR",
         "Current bid: 19.90 EUR, 2 bids",
         "Shipping: 6.50 EUR",
         "Format: Auction; ends Tue 29 Sep 21:30 CEST (in 2d 9h)",
         "Condition: Usato",
-        "Found on EBAY_IT, item located in IT",
+        "Found on EBAY_IT, item located in IT (search data only)",
         "Query: <i>futura (spider, ragno)</i>",
     ]
 
 
-def test_format_escapes_html_and_shows_the_original_currency() -> None:
+def test_format_auction_with_details_and_flags() -> None:
+    details = ItemDetails.model_validate(load_fixture("item_110000000001.json"))
+    auction = (
+        fixture_listings()[0]
+        .with_details(details)
+        .with_verdict(Verdict.FLAG, ["negated 'vetro rotto' in condition notes"])
+    )
+    auction = replace(
+        auction,
+        reserve_met=False,
+        condition_description="Funzionante <ok> & " + "molto bello " * 40,
+    )
+    lines = format_listing(auction, tz=ROME, now=NOW).splitlines()
+    assert lines[1] == "<b>Check:</b> negated 'vetro rotto' in condition notes"
+    assert "Current bid: 19.90 EUR, 2 bids; next bid from 20.40 EUR; reserve not met" in lines
+    notes = next(line for line in lines if line.startswith("Condition notes:"))
+    assert notes.startswith("Condition notes: <i>Funzionante &lt;ok&gt; &amp; molto bello")
+    assert notes.endswith("...</i>")
+    assert len(notes) < 360
+    assert lines[-2] == "Found on EBAY_IT, item located in IT"
+
+
+def test_format_escapes_html_and_converts_the_total() -> None:
     converted = fixture_listings()[1]
-    text = format_listing(converted, tz=ROME, now=NOW)
+    usd = replace(converted, price=Money(Decimal("99.00"), "USD"), original_price=None)
+    text = format_listing(
+        usd, tz=ROME, now=NOW, converter=CurrencyConverter("EUR", {"USD": Decimal("0.86")})
+    )
     assert "Japan Movt &lt;RARE&gt; &amp; Unique</b>" in text
-    assert "Price: 85.10 EUR (seller price 99.00 USD)" in text
+    assert "Total: 99.00 USD (item), shipping unknown, about 85.14 EUR" in text
     assert "Shipping: unknown" in text
     assert "Format: Buy It Now, Best Offer" in text
     assert "Current bid" not in text
+    assert "Check:" not in text
+
+
+def test_format_shows_the_original_currency_and_import_charges() -> None:
+    converted = replace(
+        fixture_listings()[1],
+        shipping=Money(Decimal("20.00"), "EUR"),
+        import_charges=Money(Decimal("18.00"), "EUR"),
+    )
+    text = format_listing(converted, tz=ROME, now=NOW)
+    assert "Total: 123.10 EUR (item + shipping + import charges)" in text
+    assert "Price: 85.10 EUR (seller price 99.00 USD)" in text
+    assert "Shipping: 20.00 EUR + import charges 18.00 EUR" in text
 
 
 def test_format_remaining() -> None:

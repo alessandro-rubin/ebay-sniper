@@ -9,9 +9,9 @@ The purchase is always made manually in the eBay app: automated buying or
 bidding is prohibited by the eBay User Agreement without eBay's permission.
 See `CLAUDE.md` for design, constraints and milestones.
 
-Status: milestone M1 (search, deduplication, Telegram notification of every new
-listing). Rules, vision filtering and the other milestones are listed in
-`CLAUDE.md`.
+Status: milestones M1 and M2 (search, deduplication, keyword/condition/price
+rules, item details, Telegram notifications). Vision filtering and the other
+milestones are listed in `CLAUDE.md`.
 
 ## Setup
 
@@ -50,6 +50,17 @@ one summary message. From then on only new listings are notified. The same
 happens when a query or a marketplace is added. Set `seed_new_searches = false`
 in `config.toml` to be notified of everything once instead.
 
+**Rules.** Every new listing gets a verdict from `[rules]` and `[price]`:
+`drop` (clear damage in the title or in the seller's condition notes, or a
+total above `max_total`) is recorded but not notified; `flag` (for example
+"not working" or condition 7000, often just a dead battery) is notified with a
+warning; `pass` is notified. Matching is case- and accent-insensitive on whole
+words, with `*` for prefixes; a drop keyword preceded by a negation ("no
+cracked crystal") only flags. Listings that pass get one `getItem` call
+(at most `max_details_per_cycle` per cycle) for all photos, condition notes,
+precise shipping and import charges, and the rules run again on that data.
+`search` prints the verdict of each result, which helps tune the keywords.
+
 **Flood protection.** At most `max_notifications_per_cycle` listings are
 notified one by one per cycle; the rest are listed with links in a single
 message. A notification that fails (for example Telegram unreachable) is
@@ -85,7 +96,10 @@ eBay credentials were rejected).
   sit beyond the first page and go unnoticed.
 - Prices are shown in the currency of the marketplace that returned the
   listing (eBay converts them); the seller's own price is shown next to it
-  when a conversion happened.
+  when a conversion happened. The price cap converts other currencies with
+  the approximate `exchange_rates` of `config.toml`.
+- A listing dropped for its price is not evaluated again if the seller later
+  lowers the price.
 
 ## Development
 

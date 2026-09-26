@@ -11,6 +11,7 @@ import httpx
 from ebay_sniper import __version__
 from ebay_sniper.config import AppConfig, Secrets
 from ebay_sniper.ebay import BrowseClient, EbayAppAuth, TokenProvider
+from ebay_sniper.models import CurrencyConverter
 from ebay_sniper.notify import TelegramClient, TelegramNotifier
 from ebay_sniper.pipeline import Pipeline
 from ebay_sniper.store import Store
@@ -54,7 +55,10 @@ def open_ebay(config: AppConfig, secrets: Secrets) -> Iterator[EbayServices]:
 def open_notifier(config: AppConfig, secrets: Secrets) -> Iterator[TelegramNotifier]:
     with httpx.Client(timeout=TELEGRAM_TIMEOUT, headers=HEADERS) as http:
         client = TelegramClient(http, secrets.telegram_bot_token)
-        yield TelegramNotifier(client, secrets.telegram_chat_id, config.telegram)
+        converter = CurrencyConverter(config.price.currency, config.price.exchange_rates)
+        yield TelegramNotifier(
+            client, secrets.telegram_chat_id, config.telegram, converter=converter
+        )
 
 
 @contextmanager

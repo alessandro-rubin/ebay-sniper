@@ -42,9 +42,10 @@ from ebay_sniper.config import (
 )
 from ebay_sniper.ebay import EbayApiError, EbayAuthError, SearchPage
 from ebay_sniper.logsetup import configure_logging, register_secrets
-from ebay_sniper.models import Listing
+from ebay_sniper.models import Listing, Verdict
 from ebay_sniper.notify import NotificationError
 from ebay_sniper.pipeline import CycleError, utc_now
+from ebay_sniper.rules import RuleEngine
 from ebay_sniper.store import Store
 
 log = logging.getLogger(__name__)
@@ -288,6 +289,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
         return 1
     tz = ZoneInfo(config.telegram.timezone)
     options = config.search.buying_options
+    rules = RuleEngine(config.rules, config.price)
     with open_ebay(config, secrets) as ebay:
         for marketplace in marketplaces:
             try:
@@ -300,12 +302,14 @@ def _cmd_search(args: argparse.Namespace) -> int:
             if args.save_json:
                 args.save_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
                 print(f"Saved the sanitized response to {args.save_json}")
-            _print_page(SearchPage.model_validate(data), marketplace, query, tz)
+            _print_page(SearchPage.model_validate(data), marketplace, query, tz, rules)
         print(f"Browse API calls used: {ebay.browse.calls}")
     return 0
 
 
-def _print_page(page: SearchPage, marketplace: str, query: str, tz: ZoneInfo) -> None:
+def _print_page(
+    page: SearchPage, marketplace: str, query: str, tz: ZoneInfo, rules: RuleEngine
+) -> None:
     for warning in page.warnings:
         print(f"{marketplace}: warning {warning.describe()}")
     print(f"{marketplace}: {page.total} matching listings, showing {len(page.item_summaries)}")
@@ -316,11 +320,15 @@ def _print_page(page: SearchPage, marketplace: str, query: str, tz: ZoneInfo) ->
             if listing.origin_date
             else "?"
         )
-        price = listing.current_bid or listing.price
-        price_text = str(price) if price is not None else "n/a"
+        total = listing.total
+        total_text = str(total) if total is not None else "n/a"
         options = "/".join(listing.buying_options)
-        print(f"  {listed}  {price_text:>14}  {options:<28}  {listing.title}")
+        print(f"  {listed}  {total_text:>14}  {options:<28}  {listing.title}")
         print(f"  {'':16}  {listing.url}")
+        # The rules on search data only: condition notes need getItem.
+        result = rules.evaluate(listing)
+        if result.verdict is not Verdict.PASS:
+            print(f"  {'':16}  {result.verdict.upper()}: {'; '.join(result.reasons)}")
 
 
 def _bounded_int(low: int, high: int) -> Callable[[str], int]:

@@ -19,7 +19,7 @@ import httpx
 from pydantic import SecretStr
 
 from ebay_sniper.config import TelegramConfig
-from ebay_sniper.models import Listing
+from ebay_sniper.models import CurrencyConverter, Listing, Verdict
 from ebay_sniper.notify.base import NotificationError
 from ebay_sniper.retry import backoff_delay
 
@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 API_URL = "https://api.telegram.org"
 MAX_CAPTION_LENGTH = 1024
 LARGE_IMAGE_SIZE = "s-l1600"
+# Characters of the seller's condition notes shown in a notification.
+MAX_NOTES_LENGTH = 300
 
 _EBAY_IMAGE_SIZE = re.compile(r"/s-l\d+(\.(?:jpe?g|png|webp))(?=$|\?)", re.IGNORECASE)
 _FORMAT_NAMES = {
@@ -133,12 +135,14 @@ class TelegramNotifier:
         chat_id: str,
         config: TelegramConfig,
         *,
+        converter: CurrencyConverter | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._client = client
         self._chat_id = chat_id
         self._max_photos = config.max_photos if config.send_all_photos else 1
         self._tz = ZoneInfo(config.timezone)
+        self._converter = converter
         self._clock = clock
 
     def notify_listing(self, listing: Listing) -> None:
@@ -146,7 +150,7 @@ class TelegramNotifier:
 
         A photo problem never loses the notification: it falls back to text.
         """
-        text = format_listing(listing, tz=self._tz, now=self._clock())
+        text = format_listing(listing, tz=self._tz, now=self._clock(), converter=self._converter)
         markup = {"inline_keyboard": [[{"text": "Open on eBay", "url": listing.url}]]}
         photos = listing.image_urls[: self._max_photos]
         if len(photos) == 1 and len(text) <= MAX_CAPTION_LENGTH:
@@ -218,26 +222,75 @@ def _photo_variants(photos: Sequence[str]) -> Iterator[tuple[str, ...]]:
         yield tuple(photos)
 
 
-def format_listing(listing: Listing, *, tz: ZoneInfo, now: datetime) -> str:
+def format_listing(
+    listing: Listing,
+    *,
+    tz: ZoneInfo,
+    now: datetime,
+    converter: CurrencyConverter | None = None,
+) -> str:
     """The notification text, in Telegram HTML."""
+    lines = [f"<b>{_escape(listing.title)}</b>"]
+    if listing.verdict is Verdict.FLAG and listing.reasons:
+        lines.append(f"<b>Check:</b> {_escape('; '.join(listing.reasons))}")
+    total = format_total(listing, converter)
+    if total:
+        lines.append(f"Total: {total}")
     price = str(listing.price) if listing.price is not None else "n/a"
     if listing.original_price is not None:
         price += f" (seller price {listing.original_price})"
-    lines = [f"<b>{_escape(listing.title)}</b>", f"Price: {price}"]
+    lines.append(f"Price: {price}")
     if listing.is_auction:
-        bid = listing.current_bid or listing.price
-        count = listing.bid_count or 0
-        lines.append(f"Current bid: {bid or 'n/a'}, {count} bid{'' if count == 1 else 's'}")
-    lines.append(f"Shipping: {listing.shipping or 'unknown'}")
+        lines.append(f"Current bid: {describe_bids(listing)}")
+    shipping = str(listing.shipping) if listing.shipping is not None else "unknown"
+    if listing.import_charges is not None:
+        shipping += f" + import charges {listing.import_charges}"
+    lines.append(f"Shipping: {shipping}")
     lines.append(f"Format: {describe_format(listing, tz=tz, now=now)}")
     if listing.condition:
         lines.append(f"Condition: {_escape(listing.condition)}")
+    if listing.condition_description:
+        notes = _shorten(listing.condition_description, MAX_NOTES_LENGTH)
+        lines.append(f"Condition notes: <i>{_escape(notes)}</i>")
     found = f"Found on {listing.marketplace}"
     if listing.location_country:
         found += f", item located in {_escape(listing.location_country)}"
+    if not listing.details_fetched:
+        found += " (search data only)"
     lines.append(found)
     lines.append(f"Query: <i>{_escape(listing.query)}</i>")
     return "\n".join(lines)
+
+
+def format_total(listing: Listing, converter: CurrencyConverter | None) -> str | None:
+    """Item plus known costs, with what is still unknown and an approximate conversion."""
+    total = listing.total
+    if total is None:
+        return None
+    parts = ["current bid" if listing.is_auction and listing.current_bid else "item"]
+    if listing.shipping is not None:
+        parts.append("shipping")
+    if listing.import_charges is not None:
+        parts.append("import charges")
+    text = f"{total} ({' + '.join(parts)})"
+    if listing.shipping is None:
+        text += ", shipping unknown"
+    if converter is not None and total.currency != converter.target:
+        converted = converter.convert(total)
+        if converted is not None:
+            text += f", about {converted}"
+    return text
+
+
+def describe_bids(listing: Listing) -> str:
+    bid = listing.current_bid or listing.price
+    count = listing.bid_count or 0
+    text = f"{bid or 'n/a'}, {count} bid{'' if count == 1 else 's'}"
+    if listing.minimum_bid is not None:
+        text += f"; next bid from {listing.minimum_bid}"
+    if listing.reserve_met is False:
+        text += "; reserve not met"
+    return text
 
 
 def describe_format(listing: Listing, *, tz: ZoneInfo, now: datetime) -> str:
@@ -264,3 +317,8 @@ def format_remaining(delta: timedelta) -> str:
 
 def _escape(text: str) -> str:
     return html.escape(text, quote=False)
+
+
+def _shorten(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from ebay_sniper.ebay.models import SearchPage
-from ebay_sniper.models import Listing
+from ebay_sniper.ebay.models import ItemDetails, SearchPage
+from ebay_sniper.models import Listing, Money, Verdict
 from ebay_sniper.store import MIGRATIONS, ListingStatus, RunStatus, Store
 from factories import load_fixture, make_item, make_page
 
@@ -132,3 +135,41 @@ def test_api_calls_since(store: Store) -> None:
 def test_naive_datetimes_are_rejected(store: Store) -> None:
     with pytest.raises(ValueError, match="naive"):
         store.begin_run(datetime(2026, 1, 1), stale_after=timedelta(minutes=30))
+
+
+def test_upgrade_from_the_m1_schema_keeps_the_data(tmp_path: Path) -> None:
+    path = tmp_path / "db.sqlite3"
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.executescript(f"BEGIN;\n{MIGRATIONS[0]}\nPRAGMA user_version = 1;\nCOMMIT;")
+    conn.execute(
+        "INSERT INTO listings (listing_id, item_id, marketplace, query, title, url, "
+        "buying_options, image_urls, first_seen_at, last_seen_at, status) "
+        "VALUES ('9', 'v1|9|0', 'EBAY_IT', 'q', 'Old', 'https://www.ebay.it/itm/9', "
+        "'[\"FIXED_PRICE\"]', '[]', '2026-09-01T00:00:00+00:00', "
+        "'2026-09-01T00:00:00+00:00', 'pending')"
+    )
+    conn.close()
+    with Store.open(path) as store:
+        assert store.schema_version == len(MIGRATIONS) == 2
+        old = store.get("9")
+        assert old is not None
+        assert (old.title, old.verdict, old.reasons, old.details_fetched) == (
+            "Old",
+            None,
+            (),
+            False,
+        )
+        assert [listing.listing_id for listing in store.pending()] == ["9"]
+
+
+def test_update_listing_stores_details_and_verdict(store: Store) -> None:
+    page = SearchPage.model_validate(load_fixture("search_ebay_it.json"))
+    listing = listings_from(page)[0]
+    store.save_cycle(NOW, new=[(listing, ListingStatus.PENDING)])
+    details = ItemDetails.model_validate(load_fixture("item_110000000001.json"))
+    detailed = listing.with_details(details).with_verdict(Verdict.FLAG, ["a", "b"])
+    detailed = replace(detailed, import_charges=Money(Decimal("3.10"), "EUR"))
+    store.update_listing(detailed, ListingStatus.PENDING)
+    assert store.get(listing.listing_id) == detailed
+    store.update_listing(detailed, ListingStatus.DROPPED)
+    assert store.status_of(listing.listing_id) is ListingStatus.DROPPED

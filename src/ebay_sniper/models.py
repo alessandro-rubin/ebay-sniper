@@ -1,12 +1,24 @@
-"""Domain objects shared by the pipeline, the store and the notifier."""
+"""Domain objects shared by the pipeline, the rules, the store and the notifier."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 
-from ebay_sniper.ebay.models import ApiAmount, ApiShippingOption, ItemSummary
+from ebay_sniper.ebay.models import ApiAmount, ApiShippingOption, ItemDetails, ItemSummary
+
+CENT = Decimal("0.01")
+
+
+class Verdict(StrEnum):
+    """Outcome of the rules: notify, notify with a warning, or discard."""
+
+    PASS = "pass"
+    FLAG = "flag"
+    DROP = "drop"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,8 +44,26 @@ class Money:
 
 
 @dataclass(frozen=True, slots=True)
+class CurrencyConverter:
+    """Approximate conversion to one currency with configured rates."""
+
+    target: str
+    # Units of `target` for one unit of each other currency.
+    rates: Mapping[str, Decimal] = field(default_factory=dict)
+
+    def convert(self, money: Money) -> Money | None:
+        """The amount in the target currency, or None without a rate."""
+        if money.currency == self.target:
+            return money
+        rate = self.rates.get(money.currency)
+        if rate is None:
+            return None
+        return Money((money.value * rate).quantize(CENT), self.target)
+
+
+@dataclass(frozen=True, slots=True)
 class Listing:
-    """A listing as seen in the search results of one marketplace and query.
+    """A listing as seen on one marketplace, optionally enriched by getItem.
 
     It holds no seller data: the app must not store eBay user information.
     """
@@ -59,10 +89,34 @@ class Listing:
     image_urls: tuple[str, ...] = ()
     origin_date: datetime | None = None
     end_date: datetime | None = None
+    # From getItem.
+    details_fetched: bool = False
+    condition_description: str | None = None
+    # Import charges of the cheapest shipping option (eBay international programs).
+    import_charges: Money | None = None
+    minimum_bid: Money | None = None
+    reserve_met: bool | None = None
+    # From the rules.
+    verdict: Verdict | None = None
+    reasons: tuple[str, ...] = ()
 
     @property
     def is_auction(self) -> bool:
         return "AUCTION" in self.buying_options
+
+    @property
+    def total(self) -> Money | None:
+        """Item price (current bid for auctions) plus shipping and import charges when known.
+
+        None when the price is unknown or the parts use different currencies.
+        """
+        base = self.current_bid if self.is_auction and self.current_bid else self.price
+        if base is None:
+            return None
+        extras = [money for money in (self.shipping, self.import_charges) if money is not None]
+        if any(money.currency != base.currency for money in extras):
+            return None
+        return Money(base.value + sum((money.value for money in extras), Decimal(0)), base.currency)
 
     @classmethod
     def from_summary(cls, item: ItemSummary, *, marketplace: str, query: str) -> Listing:
@@ -87,12 +141,45 @@ class Listing:
             end_date=item.item_end_date,
         )
 
+    def with_details(self, details: ItemDetails) -> Listing:
+        """Merge a getItem response: all photos, condition notes, precise shipping."""
+        option = _cheapest_option(details.shipping_options)
+        return replace(
+            self,
+            title=details.title,
+            price=Money.from_api(details.price) or self.price,
+            original_price=Money.original_from_api(details.price) or self.original_price,
+            current_bid=Money.from_api(details.current_bid_price) or self.current_bid,
+            bid_count=details.bid_count if details.bid_count is not None else self.bid_count,
+            shipping=Money.from_api(option.shipping_cost) if option else self.shipping,
+            import_charges=Money.from_api(option.import_charges) if option else None,
+            condition=details.condition or self.condition,
+            condition_id=details.condition_id or self.condition_id,
+            image_urls=_image_urls(details) or self.image_urls,
+            end_date=details.item_end_date or self.end_date,
+            details_fetched=True,
+            condition_description=details.condition_description,
+            minimum_bid=Money.from_api(details.minimum_price_to_bid),
+            reserve_met=details.reserve_price_met,
+        )
 
-def cheapest_shipping(options: tuple[ApiShippingOption, ...]) -> Money | None:
-    costs = [
-        money for option in options if (money := Money.from_api(option.shipping_cost)) is not None
-    ]
-    return min(costs, key=lambda money: money.value, default=None)
+    def with_verdict(self, verdict: Verdict, reasons: Sequence[str]) -> Listing:
+        return replace(self, verdict=verdict, reasons=tuple(reasons))
+
+
+def cheapest_shipping(options: Sequence[ApiShippingOption]) -> Money | None:
+    option = _cheapest_option(options)
+    return Money.from_api(option.shipping_cost) if option else None
+
+
+def _cheapest_option(options: Sequence[ApiShippingOption]) -> ApiShippingOption | None:
+    """The cheapest option with a known cost; None if no cost is known."""
+    priced = [option for option in options if option.shipping_cost is not None]
+    return min(
+        priced,
+        key=lambda option: option.shipping_cost.value if option.shipping_cost else Decimal(0),
+        default=None,
+    )
 
 
 def _image_urls(item: ItemSummary) -> tuple[str, ...]:

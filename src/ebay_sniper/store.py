@@ -25,7 +25,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from ebay_sniper.models import Listing, Money
+from ebay_sniper.models import Listing, Money, Verdict
 
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -81,6 +81,19 @@ MIGRATIONS: tuple[str, ...] = (
         error TEXT
     );
     """,
+    # M2: details from getItem and the verdict of the rules.
+    """
+    ALTER TABLE listings ADD COLUMN details_fetched INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE listings ADD COLUMN condition_description TEXT;
+    ALTER TABLE listings ADD COLUMN import_charges TEXT;
+    ALTER TABLE listings ADD COLUMN import_charges_currency TEXT;
+    ALTER TABLE listings ADD COLUMN minimum_bid TEXT;
+    ALTER TABLE listings ADD COLUMN minimum_bid_currency TEXT;
+    ALTER TABLE listings ADD COLUMN reserve_met INTEGER;
+    ALTER TABLE listings ADD COLUMN verdict TEXT;
+    ALTER TABLE listings ADD COLUMN reasons TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE runs ADD COLUMN dropped INTEGER NOT NULL DEFAULT 0;
+    """,
 )
 
 # SQLite limits the number of bound parameters per statement.
@@ -93,6 +106,8 @@ class ListingStatus(StrEnum):
     NOTIFIED = "notified"
     # Already online when its search ran for the first time: recorded only.
     SEEDED = "seeded"
+    # Discarded by the rules; kept to review and tune them.
+    DROPPED = "dropped"
     # Over the per-cycle notification cap: summarised, not notified.
     SUPPRESSED = "suppressed"
     # The notification kept failing.
@@ -202,16 +217,27 @@ class Store:
         results: int,
         new_listings: int,
         notified: int,
+        dropped: int = 0,
         error: str | None = None,
     ) -> None:
         self._conn.execute(
             """
             UPDATE runs
             SET finished_at = ?, status = ?, api_calls = ?, results = ?,
-                new_listings = ?, notified = ?, error = ?
+                new_listings = ?, notified = ?, dropped = ?, error = ?
             WHERE run_id = ?
             """,
-            (_to_iso(now), status, api_calls, results, new_listings, notified, error, run_id),
+            (
+                _to_iso(now),
+                status,
+                api_calls,
+                results,
+                new_listings,
+                notified,
+                dropped,
+                error,
+                run_id,
+            ),
         )
 
     def api_calls_since(self, since: datetime) -> int:
@@ -256,10 +282,11 @@ class Store:
         (query, marketplace, total results) of every search that succeeded.
         """
         timestamp = _to_iso(now)
+        columns = (*_DATA_COLUMNS, "first_seen_at", "last_seen_at", "status")
         with self._transaction() as conn:
             conn.executemany(
-                f"INSERT INTO listings ({', '.join(_LISTING_COLUMNS)}) "
-                f"VALUES ({', '.join('?' * len(_LISTING_COLUMNS))})",
+                f"INSERT INTO listings ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' * len(columns))})",
                 (
                     (*_listing_values(listing), timestamp, timestamp, status)
                     for listing, status in new
@@ -281,6 +308,16 @@ class Store:
                     for query, marketplace, total in searches
                 ),
             )
+
+    def update_listing(self, listing: Listing, status: ListingStatus) -> None:
+        """Store what changed after getItem and the rules, and the new status."""
+        columns = [column for column in _DATA_COLUMNS if column != "listing_id"]
+        values = _listing_values(listing)[1:]
+        self._conn.execute(
+            f"UPDATE listings SET {', '.join(f'{column} = ?' for column in columns)}, "
+            "status = ? WHERE listing_id = ?",
+            (*values, status, listing.listing_id),
+        )
 
     def pending(self) -> list[Listing]:
         """Listings waiting for a notification, newest first.
@@ -343,7 +380,8 @@ class Store:
         return {ListingStatus(row[0]): int(row[1]) for row in rows}
 
 
-_LISTING_COLUMNS = (
+# Columns holding Listing data, in the order produced by _listing_values().
+_DATA_COLUMNS = (
     "listing_id",
     "item_id",
     "marketplace",
@@ -366,14 +404,19 @@ _LISTING_COLUMNS = (
     "image_urls",
     "origin_date",
     "end_date",
-    "first_seen_at",
-    "last_seen_at",
-    "status",
+    "details_fetched",
+    "condition_description",
+    "import_charges",
+    "import_charges_currency",
+    "minimum_bid",
+    "minimum_bid_currency",
+    "reserve_met",
+    "verdict",
+    "reasons",
 )
 
 
 def _listing_values(listing: Listing) -> tuple[object, ...]:
-    """Column values of a listing, in _LISTING_COLUMNS order up to end_date."""
     return (
         listing.listing_id,
         listing.item_id,
@@ -393,6 +436,13 @@ def _listing_values(listing: Listing) -> tuple[object, ...]:
         json.dumps(list(listing.image_urls)),
         _to_iso(listing.origin_date) if listing.origin_date else None,
         _to_iso(listing.end_date) if listing.end_date else None,
+        int(listing.details_fetched),
+        listing.condition_description,
+        *_money_values(listing.import_charges),
+        *_money_values(listing.minimum_bid),
+        None if listing.reserve_met is None else int(listing.reserve_met),
+        listing.verdict,
+        json.dumps(list(listing.reasons)),
     )
 
 
@@ -416,6 +466,13 @@ def _listing_from_row(row: sqlite3.Row) -> Listing:
         image_urls=tuple(json.loads(row["image_urls"])),
         origin_date=_from_iso(row["origin_date"]) if row["origin_date"] else None,
         end_date=_from_iso(row["end_date"]) if row["end_date"] else None,
+        details_fetched=bool(row["details_fetched"]),
+        condition_description=row["condition_description"],
+        import_charges=_money(row["import_charges"], row["import_charges_currency"]),
+        minimum_bid=_money(row["minimum_bid"], row["minimum_bid_currency"]),
+        reserve_met=None if row["reserve_met"] is None else bool(row["reserve_met"]),
+        verdict=Verdict(row["verdict"]) if row["verdict"] else None,
+        reasons=tuple(json.loads(row["reasons"])),
     )
 
 

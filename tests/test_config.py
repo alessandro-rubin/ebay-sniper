@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -97,7 +99,9 @@ def test_budget_of_the_test_config(config: AppConfig) -> None:
     budget = compute_budget(config)
     assert budget.cycles_per_day == 72
     assert budget.search_calls_per_cycle == 4
-    assert budget.total_calls_per_day == 288
+    # The getItem cap (default 10 per cycle) counts as a worst case.
+    assert budget.detail_calls_per_cycle == 10
+    assert budget.total_calls_per_day == 72 * 4 + 72 * 10
     assert budget.allowed_calls_per_day == 3000
     assert budget.within_budget
 
@@ -106,11 +110,38 @@ def test_budget_exceeded_suggests_a_minimum_interval(tmp_path: Path) -> None:
     text = replace_line("poll_interval_minutes = 20", "poll_interval_minutes = 1")
     text = text.replace("api_budget_share = 0.6", "api_budget_share = 0.1")
     budget = compute_budget(load_config(write_config(tmp_path, text)))
-    # 1440 cycles x 4 calls = 5760 > 500 allowed; 500 // 4 = 125 cycles fit.
+    # 1440 cycles x 14 calls > 500 allowed; 500 // 14 = 35 cycles fit.
     assert not budget.within_budget
     assert budget.allowed_calls_per_day == 500
-    assert budget.minimum_poll_interval_minutes == 12
-    assert 1440 // 12 * 4 <= 500
+    assert budget.minimum_poll_interval_minutes == 42
+    assert math.ceil(1440 / 42) * 14 <= 500
+
+
+def test_details_can_be_disabled(tmp_path: Path) -> None:
+    text = replace_line(
+        "max_notifications_per_cycle = 10",
+        "max_notifications_per_cycle = 10\nmax_details_per_cycle = 0",
+    )
+    assert compute_budget(load_config(write_config(tmp_path, text))).total_calls_per_day == 288
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("{ USD = 0.86 }", "{ usd = 0.86 }", "ISO 4217"),
+        ("{ USD = 0.86 }", "{ USD = 0 }", "positive"),
+        ('"missing hand*"', '"  *  "', "without letters"),
+        ('"missing hand*"', '"missing*hand"', "only allowed once, at the end"),
+        ("flag_condition_ids = [7000]", 'flag_condition_ids = ["used"]', "flag_condition_ids"),
+    ],
+)
+def test_invalid_price_and_rules_values(tmp_path: Path, old: str, new: str, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(tmp_path, replace_line(old, new)))
+
+
+def test_exchange_rates_are_decimals(config: AppConfig) -> None:
+    assert config.price.exchange_rates == {"USD": Decimal("0.86")}
 
 
 def test_load_secrets_from_env_file(env_path: Path) -> None:
