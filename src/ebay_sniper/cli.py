@@ -13,6 +13,7 @@ Results meant for the user go to stdout, logs go to stderr.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import signal
@@ -124,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    tolerate_unencodable_output()
     configure_logging(verbose=args.verbose)
     handler: Handler = args.handler
     try:
@@ -138,6 +140,17 @@ def main(argv: list[str] | None = None) -> int:
         # Logged, not printed by the interpreter, so that secrets are redacted.
         log.exception("Unexpected error")
         return 1
+
+
+def tolerate_unencodable_output() -> None:
+    """Escape characters the output encoding cannot represent instead of crashing.
+
+    Redirected output on Windows (a log file, a scheduled task) uses the ANSI
+    code page, while eBay titles often contain emoji or other scripts.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(errors="backslashreplace")
 
 
 def _load(args: argparse.Namespace) -> tuple[AppConfig, Secrets]:

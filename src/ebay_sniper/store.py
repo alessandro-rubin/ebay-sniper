@@ -138,13 +138,23 @@ class Store:
     def open(cls, path: Path) -> Self:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Autocommit mode: transactions are explicit, see _transaction().
-        conn = sqlite3.connect(path, isolation_level=None)
-        conn.execute("PRAGMA journal_mode = WAL")
-        return cls(conn)
+        return cls._connect(path, wal=True)
 
     @classmethod
     def in_memory(cls) -> Self:
-        return cls(sqlite3.connect(":memory:", isolation_level=None))
+        return cls._connect(":memory:", wal=False)
+
+    @classmethod
+    def _connect(cls, target: Path | str, *, wal: bool) -> Self:
+        conn = sqlite3.connect(target, isolation_level=None)
+        try:
+            if wal:
+                conn.execute("PRAGMA journal_mode = WAL")
+            return cls(conn)
+        except BaseException:
+            # A failed migration must not leave the connection open.
+            conn.close()
+            raise
 
     def close(self) -> None:
         self._conn.close()

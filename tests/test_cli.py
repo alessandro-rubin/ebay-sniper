@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import re
@@ -349,3 +350,28 @@ def test_watch_runs_cycles_until_interrupted(
     assert run(config_path, "watch") == 130
     assert search.call_count == 8
     assert 1190 < sleeps[0] <= 1200
+
+
+def test_redirected_output_in_a_legacy_encoding_does_not_crash(
+    tmp_path: Path, env_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows uses the ANSI code page for redirected output (scheduled tasks,
+    # log files), and eBay titles often contain emoji or other scripts.
+    spider = "\U0001f577"
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", write_through=True)
+    stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", write_through=True)
+    monkeypatch.setattr("sys.stdout", stdout)
+    monkeypatch.setattr("sys.stderr", stderr)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        CONFIG_TOML.replace('"(spider, spiderweb) watch",', f'"spider web watch {spider}",'),
+        encoding="utf-8",
+    )
+    assert run(config_path, "check-config") == 0
+    logging.getLogger("ebay_sniper.test").warning("Dropped 1 %r", f"Montre {spider} araign\u00e9e")
+    out = stdout.buffer.getvalue().decode("cp1252")
+    err = stderr.buffer.getvalue().decode("cp1252")
+    # The emoji is escaped, characters of the code page are kept.
+    assert r"spider web watch \U0001f577" in out
+    assert r"Montre \U0001f577 araign" + "\u00e9e" in err
+    assert "Logging error" not in err

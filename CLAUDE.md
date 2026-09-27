@@ -144,6 +144,10 @@ Design choices:
 - The vision stack is an optional extra (`uv sync --extra vision`) so that M1
   and M2 run without torch.
 - Log with the stdlib `logging` module, never `print` outside the CLI.
+- The CLI reconfigures stdout/stderr with `errors="backslashreplace"`: on
+  Windows, redirected output (scheduled task, log file) uses the ANSI code page
+  (cp1252) and an emoji in an eBay title would otherwise crash `print` and
+  lose log lines.
 
 ## eBay Browse API notes
 
@@ -217,8 +221,9 @@ responses):
 **Vision** (optional extra `vision`):
 
 - Default model: SigLIP via `open_clip` (`ViT-B-16-SigLIP`, pretrained
-  `webli`). Check the name with `open_clip.list_pretrained()`; SigLIP 2 models
-  are a possible upgrade.
+  `webli`), confirmed in `open_clip.list_pretrained()` with open_clip 3.3.0
+  and torch 2.14 (CPU build on Windows). SigLIP 2 models (for example
+  `ViT-B-16-SigLIP2`) are listed too and are a possible upgrade.
 - Embed every photo of the listing, L2-normalize, and score as
   `max_sim(positives) - max_sim(negatives)` over all listing photos. When the
   labelled set grows (roughly 30 or more per class) switch to logistic
@@ -277,9 +282,10 @@ uv run ruff check . && uv run ruff format .
 `uv sync` resolves the whole project, `vision` extra included, so it needs
 `download.pytorch.org`. Where that host is blocked (for example a sandbox
 with restricted egress), install core and dev tools without the lock:
-`uv venv && uv pip install -e . pytest respx ruff`. There is no `uv.lock` yet:
-generate it with `uv lock` on a machine that reaches the PyTorch index and
-commit it.
+`uv venv && uv pip install -e . pytest respx ruff`. `uv.lock` is committed and
+universal (torch `+cpu` from the PyTorch index on Linux, from PyPI elsewhere,
+`tzdata` on Windows only); after changing dependencies, rerun `uv lock` on a
+machine that reaches the PyTorch index.
 
 On Linux, `pyproject.toml` pulls torch and torchvision from the PyTorch
 CPU-only index to avoid multi-gigabyte CUDA wheels. CPU is enough: only a few
@@ -293,6 +299,11 @@ images per new listing.
   live ones with `search --save-json`.
 - Warnings are errors (`filterwarnings = ["error"]`). Test data builders live
   in `tests/factories.py`; all credentials in tests are fake.
+- The suite passes on Python 3.12 (`.python-version`) and 3.14, on Linux and
+  Windows. From 3.13 `sqlite3` emits `ResourceWarning` for connections that
+  are never closed, which fails the run: always close a `Store` (use `with`,
+  also in fixtures). To test another version without touching `.venv`:
+  `UV_PROJECT_ENVIRONMENT=<scratch dir> uv run --python 3.14 pytest`.
 - Unit-test rules and scoring logic with synthetic inputs; the vision model is
   not loaded in the default test run (mark those tests and skip them unless the
   `vision` extra is installed).

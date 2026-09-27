@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -88,8 +88,9 @@ def notifier() -> FakeNotifier:
 
 
 @pytest.fixture
-def store() -> Store:
-    return Store.in_memory()
+def store() -> Iterator[Store]:
+    with Store.in_memory() as store:
+        yield store
 
 
 def with_runtime(config: AppConfig, **changes: object) -> AppConfig:

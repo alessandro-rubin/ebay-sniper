@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -24,8 +25,9 @@ def listings_from(page: SearchPage, marketplace: str = "EBAY_IT") -> list[Listin
 
 
 @pytest.fixture
-def store() -> Store:
-    return Store.in_memory()
+def store() -> Iterator[Store]:
+    with Store.in_memory() as store:
+        yield store
 
 
 def test_migrations_run_once(tmp_path: Path) -> None:
