@@ -43,6 +43,7 @@ uv run ebay-sniper search "futura (spider, ragno)" -m EBAY_IT -m EBAY_DE
 uv run ebay-sniper notify-test "watch" -m EBAY_US   # send the newest result to Telegram
 uv run ebay-sniper calibrate              # score references and stored listings, suggest thresholds
 uv run ebay-sniper report --match 0.76    # local HTML page: listings, photos, scores
+uv run ebay-sniper digest --dry-run       # near misses that the daily digest would send
 uv run ebay-sniper run-once               # one poll cycle, for a scheduler
 uv run ebay-sniper watch                  # poll forever at the configured interval
 ```
@@ -102,6 +103,12 @@ let through. It makes no Browse API call; photos and embeddings are cached in
 `data/image_cache`. `report` writes `data/report.html` with every stored listing,
 its photos and scores, ranked by `match`, and opens it in the browser; with
 `--match` and `--colour` it marks what those thresholds would let through.
+
+**Near-miss digest.** With the filter on, the first cycle after
+`digest_hour` (20:00 by default) sends one Telegram message a day with the
+listings kept out by the thresholds, closest first, so a threshold that is too
+strict cannot silently hide the watch. Each listing appears in one digest
+only; `digest_hour = -1` turns it off.
 
 ## Scheduling
 

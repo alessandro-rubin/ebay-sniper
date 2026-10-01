@@ -12,6 +12,8 @@
   image model and suggest the vision thresholds.
 - ``report``: write a local HTML page with the stored listings, their photos
   and scores, and open it in the browser.
+- ``digest``: send the near misses (below the photo thresholds) to Telegram
+  now; the cycle also sends them once a day.
 
 Results meant for the user go to stdout, logs go to stderr.
 """
@@ -54,7 +56,7 @@ from ebay_sniper.ebay import EbayApiError, EbayAuthError, SearchPage
 from ebay_sniper.logsetup import configure_logging, register_secrets
 from ebay_sniper.models import Listing, Verdict
 from ebay_sniper.notify import NotificationError
-from ebay_sniper.pipeline import CycleError, utc_now
+from ebay_sniper.pipeline import CycleError, format_digest, send_digest, utc_now
 from ebay_sniper.report import render_report
 from ebay_sniper.rules import RuleEngine
 from ebay_sniper.store import ListingStatus, Store
@@ -204,6 +206,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--no-open", action="store_true", help="do not open the browser")
     report.set_defaults(handler=_cmd_report)
+
+    digest = subparsers.add_parser(
+        "digest",
+        help="Send the near misses not in a digest yet to Telegram now "
+        "(the cycle also sends them once a day, see vision.digest_hour).",
+    )
+    digest.add_argument(
+        "--dry-run", action="store_true", help="print the message instead of sending it"
+    )
+    digest.set_defaults(handler=_cmd_digest)
     return parser
 
 
@@ -371,6 +383,12 @@ def _print_vision_status(config: AppConfig) -> bool:
     )
     print(f"Vision: {vision.model}/{vision.pretrained}, {mode}")
     print(f"  Reference images: {positives} positive, {negatives} negative")
+    if vision.digest_hour >= 0:
+        print(
+            f"  Near-miss digest: daily after {vision.digest_hour}:00 ({config.telegram.timezone})"
+        )
+    else:
+        print("  Near-miss digest: off")
     ok = True
     if not vision_available():
         print("  FAILED: the vision extra is not installed (uv sync --extra vision)")
@@ -596,6 +614,21 @@ def _cmd_report(args: argparse.Namespace) -> int:
     if not args.no_open:
         webbrowser.open(output.resolve().as_uri())
     return 0
+
+
+def _cmd_digest(args: argparse.Namespace) -> int:
+    config, secrets = _load(args)
+    path = config.runtime.database_path
+    if not path.exists():
+        print(f"No database yet ({path}).")
+        return 1
+    with Store.open(path) as store:
+        if args.dry_run:
+            listings = store.near_misses()
+            print(format_digest(listings) if listings else "No near misses.")
+            return 0
+        with open_notifier(config, secrets) as notifier:
+            return 0 if send_digest(store, notifier, utc_now()) else 1
 
 
 def _calibrate_listings(

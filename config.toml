@@ -109,6 +109,10 @@ max_photos = 8
 filter = false
 match_threshold = 0.0
 colour_threshold = -1.0
+# Daily Telegram summary of the listings kept out by the thresholds (the
+# safety net against a wrong threshold), sent by the first cycle after this
+# hour in the [telegram] timezone. -1 turns it off.
+digest_hour = 20
 
 [telegram]
 send_all_photos = true

@@ -10,7 +10,7 @@ from ebay_sniper.ebay.browse import EbayApiError
 from ebay_sniper.ebay.models import ItemDetails, ItemSummary, SearchPage
 from ebay_sniper.models import Listing, Verdict, VisionScore
 from ebay_sniper.notify.base import NotificationError
-from ebay_sniper.pipeline import CycleError, Pipeline
+from ebay_sniper.pipeline import CycleError, Pipeline, format_digest
 from ebay_sniper.store import ListingStatus, RunStatus, Store
 from ebay_sniper.vision import VisionError
 from factories import make_item, make_page
@@ -531,3 +531,97 @@ def test_listings_without_photos_are_notified_without_a_score(
     assert notifier.listings[0].vision_error == "the listing has no photos"
     assert classifier.requests == []
     assert (report.vision_failed, report.status) == (0, RunStatus.OK)
+
+
+class Clock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def test_daily_digest_of_near_misses(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    for listing_id in ("90", "91", "92"):
+        classifier.scores[first_photo(listing_id)] = vision_score(match=0.5)
+    filtering = with_vision(config, filter=True, match_threshold=0.7, digest_hour=20)
+    # 17:30 UTC is 19:30 in Rome (summer time): too early for the digest.
+    clock = Clock(datetime(2026, 9, 28, 17, 30, tzinfo=UTC))
+    cycle = Pipeline(filtering, searcher, store, notifier, classifier=classifier, clock=clock)
+    cycle.run_cycle()
+    searcher.pages[(Q1, IT)] = make_page(make_item("90"), make_item("91"))
+    cycle.run_cycle()
+    assert len(notifier.texts) == 1  # only the seeding message
+    clock.now = datetime(2026, 9, 28, 18, 30, tzinfo=UTC)
+    cycle.run_cycle()
+    assert len(notifier.texts) == 2
+    assert "Near misses: 2 listing(s)" in notifier.texts[-1]
+    assert "https://www.ebay.it/itm/90" in notifier.texts[-1]
+    # Once a day, and only listings not reported yet.
+    searcher.pages[(Q1, IT)] = make_page(make_item("90"), make_item("91"), make_item("92"))
+    cycle.run_cycle()
+    assert len(notifier.texts) == 2
+    clock.now = datetime(2026, 9, 29, 19, 0, tzinfo=UTC)
+    cycle.run_cycle()
+    assert "Near misses: 1 listing(s)" in notifier.texts[-1]
+    assert "itm/92" in notifier.texts[-1]
+    assert "itm/90" not in notifier.texts[-1]
+
+
+def test_a_failed_digest_is_retried_in_the_next_cycle(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    classifier.scores[first_photo("93")] = vision_score(match=0.5)
+    filtering = with_vision(config, filter=True, match_threshold=0.7, digest_hour=20)
+    clock = Clock(datetime(2026, 9, 28, 17, 30, tzinfo=UTC))
+    cycle = Pipeline(filtering, searcher, store, notifier, classifier=classifier, clock=clock)
+    cycle.run_cycle()
+    searcher.pages[(Q1, IT)] = make_page(make_item("93"))
+    cycle.run_cycle()
+    clock.now = datetime(2026, 9, 28, 18, 30, tzinfo=UTC)
+    notifier.failing = True
+    cycle.run_cycle()
+    assert [x.listing_id for x in store.near_misses()] == ["93"]
+    notifier.failing = False
+    cycle.run_cycle()
+    assert "Near misses: 1 listing(s)" in notifier.texts[-1]
+    assert store.near_misses() == []
+
+
+def test_digest_can_be_turned_off(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    classifier.scores[first_photo("94")] = vision_score(match=0.5)
+    filtering = with_vision(config, filter=True, match_threshold=0.7, digest_hour=-1)
+    cycle = vision_pipeline(filtering, searcher, store, notifier, classifier)
+    searcher.pages[(Q1, IT)] = make_page(make_item("94"))
+    cycle.run_cycle()
+    assert not any("Near misses" in text for text in notifier.texts)
+
+
+def test_format_digest_escapes_shortens_and_caps() -> None:
+    long_title = "Spider <web> & co " + "x" * 100
+    listings = [
+        Listing(
+            listing_id=str(i),
+            item_id=f"v1|{i}|0",
+            title=long_title,
+            url=f"https://www.ebay.it/itm/{i}?a=1&b=2",
+            marketplace=IT,
+            query=Q1,
+            vision=vision_score(match=0.6),
+        )
+        for i in range(25)
+    ]
+    text = format_digest(listings)
+    assert text.count("\n- ") == 20
+    assert "Spider &lt;web&gt; &amp; co" in text
+    assert 'href="https://www.ebay.it/itm/0?a=1&amp;b=2"' in text
+    assert "x..." in text
+    assert "(match 0.600, colour +0.010)" in text
+    assert text.endswith("... and 5 more (ebay-sniper report shows them all).")

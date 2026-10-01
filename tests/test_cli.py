@@ -555,3 +555,26 @@ def test_calibrate_suggests_thresholds_and_scores_stored_listings(
         assert stored is not None
         assert stored.vision is not None
         assert store.status_of("1") is ListingStatus.SEEDED
+
+
+def test_digest_dry_run_prints_the_near_misses(
+    config_path: Path, env_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    assert run(config_path, "digest", "--dry-run") == 1  # no database yet
+    page = make_page(make_item("1", title="Close one"), make_item("2", title="Kept"))
+    close, kept = (
+        Listing.from_summary(item, marketplace="EBAY_IT", query="q") for item in page.item_summaries
+    )
+    score = VisionScore(match=0.61, negative=0, colour=0.0, best_photo=0, photos=1, model="m")
+    with Store.open(config_path.parent / "data" / "test.sqlite3") as store:
+        store.save_cycle(
+            utc_now(),
+            new=[(close, ListingStatus.PENDING), (kept, ListingStatus.PENDING)],
+        )
+        store.update_listing(close.with_vision(score), ListingStatus.BELOW_THRESHOLD)
+    capsys.readouterr()
+    assert run(config_path, "digest", "--dry-run") == 0
+    out = capsys.readouterr().out
+    assert "Near misses: 1 listing(s)" in out
+    assert "Close one</a> - 25.00 EUR (match 0.610" in out
+    assert "Kept" not in out

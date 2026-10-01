@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from ebay_sniper.config import AppConfig
 from ebay_sniper.ebay.browse import EbayApiError
@@ -34,6 +35,11 @@ MAX_CONSECUTIVE_NOTIFY_FAILURES = 2
 MAX_SUMMARY_ENTRIES = 25
 # A run still marked as running after this long belongs to a dead process.
 STALE_RUN_AFTER = timedelta(minutes=30)
+# Entries listed in the daily digest of near misses, and their title length.
+MAX_DIGEST_ENTRIES = 20
+MAX_DIGEST_TITLE = 80
+# Local date of the last digest, in the store's state table.
+DIGEST_STATE_KEY = "last_digest_date"
 
 
 class Searcher(Protocol):
@@ -143,6 +149,7 @@ class Pipeline:
             self._details_phase(candidates, report)
             self._vision_phase(report)
             self._notify_phase(report)
+            self._digest_phase()
             status = report.status
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -374,6 +381,19 @@ class Pipeline:
             report.suppressed = len(overflow)
             self._send_text(format_overflow(overflow, cap))
 
+    def _digest_phase(self) -> None:
+        """Once a day, after ``vision.digest_hour``, summarise the near misses."""
+        hour = self._config.vision.digest_hour
+        if self._classifier is None or hour < 0:
+            return
+        local = self._clock().astimezone(ZoneInfo(self._config.telegram.timezone))
+        today = local.date().isoformat()
+        if local.hour < hour or self._store.get_state(DIGEST_STATE_KEY) == today:
+            return
+        # On failure the date is not recorded: the next cycle tries again.
+        if send_digest(self._store, self._notifier, self._clock()):
+            self._store.set_state(DIGEST_STATE_KEY, today)
+
     def _send_text(self, text: str) -> None:
         """Best-effort service message: a failure is logged, not raised."""
         try:
@@ -384,6 +404,50 @@ class Pipeline:
 
 def _newest_first(listing: Listing) -> float:
     return -listing.origin_date.timestamp() if listing.origin_date else 0.0
+
+
+def send_digest(store: Store, notifier: Notifier, now: datetime) -> bool:
+    """Send the near misses not in a digest yet; False if the message could not be sent.
+
+    Nothing is sent when there are none.
+    """
+    listings = store.near_misses()
+    if not listings:
+        log.info("No near misses for the digest")
+        return True
+    try:
+        notifier.send_text(format_digest(listings))
+    except NotificationError as exc:
+        log.error("Could not send the digest: %s", exc)
+        return False
+    store.mark_digested([listing.listing_id for listing in listings], now)
+    log.info("Digest sent with %d near miss(es)", len(listings))
+    return True
+
+
+def format_digest(listings: Sequence[Listing]) -> str:
+    """The near misses, closest to the references first, as Telegram HTML."""
+    lines = [
+        f"Near misses: {len(listings)} listing(s) kept out by the photo thresholds. "
+        "Check that the watch is not among them:"
+    ]
+    for listing in listings[:MAX_DIGEST_ENTRIES]:
+        title = listing.title
+        if len(title) > MAX_DIGEST_TITLE:
+            title = title[: MAX_DIGEST_TITLE - 3].rstrip() + "..."
+        price = f" - {listing.price}" if listing.price is not None else ""
+        score = listing.vision
+        scores = f" (match {score.match:.3f}, colour {score.colour:+.3f})" if score else ""
+        lines.append(
+            f'- <a href="{html.escape(listing.url)}">{html.escape(title, quote=False)}</a>'
+            f"{price}{scores}"
+        )
+    if len(listings) > MAX_DIGEST_ENTRIES:
+        lines.append(
+            f"... and {len(listings) - MAX_DIGEST_ENTRIES} more "
+            "(ebay-sniper report shows them all)."
+        )
+    return "\n".join(lines)
 
 
 def format_overflow(listings: Sequence[Listing], cap: int) -> str:

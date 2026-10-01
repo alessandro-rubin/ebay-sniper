@@ -218,6 +218,10 @@ class VisionConfig(_Section):
     match_threshold: float = Field(default=0.0, ge=-1, le=1)
     # Listings that look gold-tone (colour below this) are not notified.
     colour_threshold: float = Field(default=-1.0, ge=-2, le=2)
+    # Daily Telegram summary of the listings kept out by the thresholds, the
+    # safety net against a wrong threshold. Sent by the first cycle after this
+    # hour ([telegram] timezone); -1 turns it off.
+    digest_hour: int = Field(default=20, ge=-1, le=23)
 
 
 class TelegramConfig(_Section):
