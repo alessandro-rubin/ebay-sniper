@@ -105,7 +105,8 @@ Modules (`src/ebay_sniper/`; M1, M2 and the first part of M3 are implemented):
 | `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
 | `logsetup.py` | Logging to stderr with redaction of registered secrets (tracebacks included) |
 | `retry.py` | Backoff with jitter and `Retry-After` parsing |
-| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`, `calibrate`; later `digest` |
+| `report.py` | Local HTML page of the stored listings with photos (loaded from eBay by the browser) and scores; never published |
+| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`, `calibrate`, `report`; later `digest` |
 
 Behaviour implemented in M1 and M2 worth knowing before changing it:
 
@@ -348,6 +349,7 @@ uv run ebay-sniper check-config [--live]
 uv run ebay-sniper search "<query>" -m EBAY_IT [--save-json tests/fixtures/x.json]
 uv run ebay-sniper notify-test ["<query>"] [-m EBAY_IT]   # newest result to Telegram, marked [TEST]
 uv run ebay-sniper calibrate [-n 300] [--show 20]        # needs the vision extra
+uv run ebay-sniper report [--match 0.76 --colour -0.01]  # HTML page in data/, opens the browser
 uv run pytest
 uv run pytest -m vision      # loads the real image model
 uv run ruff check . && uv run ruff format .

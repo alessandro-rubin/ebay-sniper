@@ -10,6 +10,8 @@
   real notification end to end without touching the database.
 - ``calibrate``: score the reference images and the stored listings with the
   image model and suggest the vision thresholds.
+- ``report``: write a local HTML page with the stored listings, their photos
+  and scores, and open it in the browser.
 
 Results meant for the user go to stdout, logs go to stderr.
 """
@@ -23,9 +25,10 @@ import logging
 import signal
 import sys
 import time
+import webbrowser
 from collections.abc import Callable, Sequence
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import FrameType
 from zoneinfo import ZoneInfo
@@ -52,6 +55,7 @@ from ebay_sniper.logsetup import configure_logging, register_secrets
 from ebay_sniper.models import Listing, Verdict
 from ebay_sniper.notify import NotificationError
 from ebay_sniper.pipeline import CycleError, utc_now
+from ebay_sniper.report import render_report
 from ebay_sniper.rules import RuleEngine
 from ebay_sniper.store import ListingStatus, Store
 from ebay_sniper.vision import (
@@ -169,6 +173,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="best-matching stored listings to print (default: %(default)s)",
     )
     calibrate.set_defaults(handler=_cmd_calibrate)
+
+    report = subparsers.add_parser(
+        "report",
+        help="Write a local HTML page with the stored listings, their photos and scores, "
+        "and open it in the browser (no Browse API call, no model needed).",
+    )
+    report.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="page to write (default: report.html next to the database)",
+    )
+    report.add_argument(
+        "-n",
+        "--listings",
+        type=_bounded_int(1, 100000),
+        default=2000,
+        help="most recent stored listings to include (default: %(default)s)",
+    )
+    report.add_argument(
+        "--match",
+        type=float,
+        help="mark listings at this match threshold (default: [vision] if the filter is on)",
+    )
+    report.add_argument(
+        "--colour",
+        type=float,
+        help="mark listings at this colour threshold (default: [vision] if the filter is on)",
+    )
+    report.add_argument("--no-open", action="store_true", help="do not open the browser")
+    report.set_defaults(handler=_cmd_report)
     return parser
 
 
@@ -532,6 +567,34 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
         print(f"  colour_threshold = {colour_threshold}")
         if args.listings:
             _calibrate_listings(config, scorer, suggested, args.listings, args.show)
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    path = config.runtime.database_path
+    if not path.exists():
+        print(f"No database yet ({path}): run run-once to collect listings first.")
+        return 1
+    vision = config.vision
+    thresholds: tuple[float, float] | None = None
+    if args.match is not None or args.colour is not None:
+        thresholds = (
+            args.match if args.match is not None else vision.match_threshold,
+            args.colour if args.colour is not None else vision.colour_threshold,
+        )
+    elif vision.filter:
+        thresholds = (vision.match_threshold, vision.colour_threshold)
+    with Store.open(path) as store:
+        rows = store.recent_with_photos(args.listings)
+    output: Path = args.output or path.parent / "report.html"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        render_report(rows, generated=datetime.now(), thresholds=thresholds), encoding="utf-8"
+    )
+    print(f"Wrote {len(rows)} listings to {output.resolve()}")
+    if not args.no_open:
+        webbrowser.open(output.resolve().as_uri())
     return 0
 
 

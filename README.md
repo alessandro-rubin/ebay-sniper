@@ -42,6 +42,7 @@ uv run ebay-sniper check-config --live    # also verify eBay and Telegram creden
 uv run ebay-sniper search "futura (spider, ragno)" -m EBAY_IT -m EBAY_DE
 uv run ebay-sniper notify-test "watch" -m EBAY_US   # send the newest result to Telegram
 uv run ebay-sniper calibrate              # score references and stored listings, suggest thresholds
+uv run ebay-sniper report --match 0.76    # local HTML page: listings, photos, scores
 uv run ebay-sniper run-once               # one poll cycle, for a scheduler
 uv run ebay-sniper watch                  # poll forever at the configured interval
 ```
@@ -98,7 +99,9 @@ kept in the database. `calibrate` scores each reference image against the
 others, suggests thresholds that keep every positive, then scores the stored
 listings and prints the closest ones, so you can see what the thresholds would
 let through. It makes no Browse API call; photos and embeddings are cached in
-`data/image_cache`.
+`data/image_cache`. `report` writes `data/report.html` with every stored listing,
+its photos and scores, ranked by `match`, and opens it in the browser; with
+`--match` and `--colour` it marks what those thresholds would let through.
 
 ## Scheduling
 
