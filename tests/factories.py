@@ -20,11 +20,19 @@ TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 ITEM_URL = "https://api.ebay.com/buy/browse/v1/item"
 
+# Sandbox App IDs contain -SBX-, production ones -PRD-.
+SANDBOX_CLIENT_ID = "Test-ebaysnip-SBX-0123abcd-4567ef01"
+SANDBOX_TOKEN_URL = "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
+SANDBOX_SEARCH_URL = "https://api.sandbox.ebay.com/buy/browse/v1/item_summary/search"
+
 ENV_FILE_CONTENT = (
     f"EBAY_CLIENT_ID={EBAY_CLIENT_ID}\n"
     f"EBAY_CLIENT_SECRET={EBAY_CLIENT_SECRET}\n"
     f"TELEGRAM_BOT_TOKEN={TELEGRAM_BOT_TOKEN}\n"
     f"TELEGRAM_CHAT_ID={TELEGRAM_CHAT_ID}\n"
+)
+SANDBOX_ENV_FILE_CONTENT = (
+    ENV_FILE_CONTENT.replace(EBAY_CLIENT_ID, SANDBOX_CLIENT_ID) + "EBAY_ENVIRONMENT=sandbox\n"
 )
 
 CONFIG_TOML = """\

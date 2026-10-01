@@ -31,7 +31,10 @@ from pydantic import (
     ValidationInfo,
     field_validator,
 )
+from pydantic_core import ErrorDetails
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from ebay_sniper.ebay.endpoints import EbayEnvironment, keyset_environment
 
 DEFAULT_CONFIG_PATH = Path("config.toml")
 
@@ -261,9 +264,22 @@ class Secrets(BaseSettings):
 
     ebay_client_id: SecretStr
     ebay_client_secret: SecretStr
+    # Not a credential: the environment the eBay keyset was created in.
+    ebay_environment: EbayEnvironment = Field(default="production", validate_default=True)
     telegram_bot_token: SecretStr
     # Not a credential: a numeric user id or an @channel name.
     telegram_chat_id: str
+
+    @field_validator("ebay_environment")
+    @classmethod
+    def _check_keyset_environment(
+        cls, value: EbayEnvironment, info: ValidationInfo
+    ) -> EbayEnvironment:
+        client_id = info.data.get("ebay_client_id")
+        keyset = keyset_environment(client_id.get_secret_value()) if client_id is not None else None
+        if keyset is not None and keyset != value:
+            raise ValueError(f"EBAY_CLIENT_ID is a {keyset} keyset, set EBAY_ENVIRONMENT={keyset}")
+        return value
 
     def redaction_values(self) -> list[str]:
         """Plain values that must never appear in logs."""
@@ -298,9 +314,19 @@ def load_secrets(env_file: Path | None) -> Secrets:
     try:
         return Secrets(_env_file=env_file)  # type: ignore[call-arg]
     except ValidationError as exc:
-        names = sorted({str(error["loc"][0]).upper() for error in exc.errors()})
+        problems = sorted({_describe_secret_error(error) for error in exc.errors()})
         source = f"{env_file} or the environment" if env_file else "the environment"
-        raise ConfigError(f"missing or invalid secrets in {source}: {', '.join(names)}") from None
+        raise ConfigError(
+            f"missing or invalid secrets in {source}: {', '.join(problems)}"
+        ) from None
+
+
+def _describe_secret_error(error: ErrorDetails) -> str:
+    name = str(error["loc"][0]).upper()
+    if error["type"] == "missing":
+        return name
+    # Pydantic messages describe the expected value, never the input.
+    return f"{name} ({error['msg']})"
 
 
 def default_env_file(config_path: Path) -> Path:

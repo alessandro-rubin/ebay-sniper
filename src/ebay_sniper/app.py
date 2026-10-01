@@ -10,7 +10,7 @@ import httpx
 
 from ebay_sniper import __version__
 from ebay_sniper.config import AppConfig, Secrets
-from ebay_sniper.ebay import BrowseClient, EbayAppAuth, TokenProvider
+from ebay_sniper.ebay import API_ROOTS, BrowseClient, EbayAppAuth, TokenProvider
 from ebay_sniper.models import CurrencyConverter
 from ebay_sniper.notify import TelegramClient, TelegramNotifier
 from ebay_sniper.pipeline import Pipeline
@@ -39,12 +39,16 @@ class App:
 
 @contextmanager
 def open_ebay(config: AppConfig, secrets: Secrets) -> Iterator[EbayServices]:
+    api_root = API_ROOTS[secrets.ebay_environment]
     with httpx.Client(timeout=EBAY_TIMEOUT, headers=HEADERS) as http:
-        tokens = TokenProvider(http, secrets.ebay_client_id, secrets.ebay_client_secret)
+        tokens = TokenProvider(
+            http, secrets.ebay_client_id, secrets.ebay_client_secret, api_root=api_root
+        )
         # The token request passes its own Basic auth, which overrides this one.
         http.auth = EbayAppAuth(tokens)
         browse = BrowseClient(
             http,
+            api_root=api_root,
             delivery_country=config.search.delivery_country,
             postal_code=config.search.buyer_postal_code,
         )

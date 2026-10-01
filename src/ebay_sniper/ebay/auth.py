@@ -13,11 +13,13 @@ from collections.abc import Callable, Generator
 import httpx
 from pydantic import BaseModel, SecretStr, ValidationError
 
+from ebay_sniper.ebay.endpoints import API_ROOTS
 from ebay_sniper.retry import backoff_delay
 
 log = logging.getLogger(__name__)
 
-TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+TOKEN_PATH = "/identity/v1/oauth2/token"
+# The same scope in production and in the sandbox.
 PUBLIC_SCOPE = "https://api.ebay.com/oauth/api_scope"
 
 
@@ -39,6 +41,7 @@ class TokenProvider:
         client_id: SecretStr,
         client_secret: SecretStr,
         *,
+        api_root: str = API_ROOTS["production"],
         scope: str = PUBLIC_SCOPE,
         refresh_margin_s: float = 300.0,
         max_attempts: int = 3,
@@ -49,6 +52,7 @@ class TokenProvider:
         self._http = http
         self._client_id = client_id
         self._client_secret = client_secret
+        self._token_url = api_root + TOKEN_PATH
         self._scope = scope
         self._refresh_margin_s = refresh_margin_s
         self._max_attempts = max(max_attempts, 1)
@@ -75,7 +79,7 @@ class TokenProvider:
         for attempt in range(1, self._max_attempts + 1):
             last_attempt = attempt == self._max_attempts
             try:
-                response = self._http.post(TOKEN_URL, data=data, auth=auth)
+                response = self._http.post(self._token_url, data=data, auth=auth)
             except httpx.TransportError as exc:
                 if last_attempt:
                     raise EbayAuthError(f"token request failed: {type(exc).__name__}") from None

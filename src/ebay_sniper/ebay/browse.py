@@ -16,12 +16,13 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from ebay_sniper.ebay.auth import EbayAuthError
+from ebay_sniper.ebay.endpoints import API_ROOTS
 from ebay_sniper.ebay.models import ApiMessage, ErrorResponse, ItemDetails, SearchPage
 from ebay_sniper.retry import backoff_delay, retry_after_seconds
 
 log = logging.getLogger(__name__)
 
-BROWSE_URL = "https://api.ebay.com/buy/browse/v1"
+BROWSE_PATH = "/buy/browse/v1"
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
@@ -74,6 +75,7 @@ class BrowseClient:
         http: httpx.Client,
         *,
         delivery_country: str,
+        api_root: str = API_ROOTS["production"],
         postal_code: str | None = None,
         max_attempts: int = 4,
         backoff_base_s: float = 2.0,
@@ -81,6 +83,7 @@ class BrowseClient:
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._http = http
+        self._base_url = api_root + BROWSE_PATH
         self._delivery_country = delivery_country
         self._end_user_context = end_user_context(delivery_country, postal_code)
         self._max_attempts = max(max_attempts, 1)
@@ -155,7 +158,7 @@ class BrowseClient:
             last_attempt = attempt == self._max_attempts
             self.calls += 1
             try:
-                response = self._http.get(BROWSE_URL + path, params=params, headers=headers)
+                response = self._http.get(self._base_url + path, params=params, headers=headers)
             except EbayAuthError:
                 # The token request failed: the Browse request was never sent.
                 self.calls -= 1

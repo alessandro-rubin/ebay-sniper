@@ -15,8 +15,9 @@ from ebay_sniper.ebay.browse import (
     end_user_context,
     sanitize_response,
 )
+from ebay_sniper.ebay.endpoints import API_ROOTS
 from ebay_sniper.models import Listing, Money
-from factories import SEARCH_URL, load_fixture, make_page_data
+from factories import SANDBOX_SEARCH_URL, SEARCH_URL, load_fixture, make_page_data
 
 OPTIONS = ("FIXED_PRICE", "AUCTION", "BEST_OFFER")
 
@@ -45,6 +46,13 @@ def test_filter_and_context_values() -> None:
     assert build_filter(["AUCTION"], None) == "buyingOptions:{AUCTION}"
     assert end_user_context("IT", "35100") == "contextualLocation=country%3DIT%2Czip%3D35100"
     assert end_user_context("IT", None) == "contextualLocation=country%3DIT"
+
+
+def test_sandbox_search(respx_mock: respx.MockRouter) -> None:
+    route = respx_mock.get(SANDBOX_SEARCH_URL).respond(json=load_fixture("search_empty.json"))
+    browse = BrowseClient(httpx.Client(), delivery_country="IT", api_root=API_ROOTS["sandbox"])
+    assert search(browse).total == 0
+    assert route.call_count == 1
 
 
 def test_search_request(respx_mock: respx.MockRouter, browse: BrowseClient) -> None:

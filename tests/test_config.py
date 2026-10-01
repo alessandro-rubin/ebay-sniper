@@ -17,8 +17,11 @@ from ebay_sniper.config import (
 )
 from factories import (
     CONFIG_TOML,
+    EBAY_CLIENT_ID,
     EBAY_CLIENT_SECRET,
     ENV_FILE_CONTENT,
+    SANDBOX_CLIENT_ID,
+    SANDBOX_ENV_FILE_CONTENT,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
@@ -172,6 +175,50 @@ def test_missing_secrets_are_named_without_values(tmp_path: Path) -> None:
     assert "TELEGRAM_CHAT_ID" in message
     assert "EBAY_CLIENT_ID" not in message.replace("EBAY_CLIENT_SECRET", "")
     assert TELEGRAM_BOT_TOKEN not in message
+
+
+def write_env(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / ".env"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_ebay_environment_defaults_to_production(env_path: Path) -> None:
+    assert load_secrets(env_path).ebay_environment == "production"
+
+
+def test_sandbox_keyset(tmp_path: Path) -> None:
+    secrets = load_secrets(write_env(tmp_path, SANDBOX_ENV_FILE_CONTENT))
+    assert secrets.ebay_environment == "sandbox"
+
+
+@pytest.mark.parametrize(
+    ("client_id", "environment", "expected"),
+    [
+        (SANDBOX_CLIENT_ID, "production", "sandbox"),
+        (SANDBOX_CLIENT_ID.replace("-SBX-", "-PRD-"), "sandbox", "production"),
+    ],
+)
+def test_keyset_and_environment_must_match(
+    tmp_path: Path, client_id: str, environment: str, expected: str
+) -> None:
+    text = ENV_FILE_CONTENT.replace(EBAY_CLIENT_ID, client_id)
+    with pytest.raises(ConfigError) as exc_info:
+        load_secrets(write_env(tmp_path, f"{text}EBAY_ENVIRONMENT={environment}\n"))
+    message = str(exc_info.value)
+    assert f"set EBAY_ENVIRONMENT={expected}" in message
+    assert client_id not in message
+
+
+def test_sandbox_keyset_without_environment_is_rejected(tmp_path: Path) -> None:
+    text = ENV_FILE_CONTENT.replace(EBAY_CLIENT_ID, SANDBOX_CLIENT_ID)
+    with pytest.raises(ConfigError, match="set EBAY_ENVIRONMENT=sandbox"):
+        load_secrets(write_env(tmp_path, text))
+
+
+def test_unknown_ebay_environment(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"EBAY_ENVIRONMENT .*'production' or 'sandbox'"):
+        load_secrets(write_env(tmp_path, ENV_FILE_CONTENT + "EBAY_ENVIRONMENT=staging\n"))
 
 
 def test_default_env_file_is_next_to_the_config(config_path: Path) -> None:

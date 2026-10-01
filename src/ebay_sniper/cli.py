@@ -164,8 +164,22 @@ def _env_file(args: argparse.Namespace) -> Path:
     return args.env_file or default_env_file(args.config)
 
 
+def _require_production(secrets: Secrets) -> None:
+    """Keep sandbox test listings out of the database used in production.
+
+    They would also mark the searches as seeded, so the first production run
+    would notify every listing already online.
+    """
+    if secrets.ebay_environment != "production":
+        raise ConfigError(
+            f"EBAY_ENVIRONMENT is {secrets.ebay_environment}: run-once and watch need a "
+            "production keyset (check-config --live and search work in the sandbox)"
+        )
+
+
 def _cmd_run_once(args: argparse.Namespace) -> int:
     config, secrets = _load(args)
+    _require_production(secrets)
     with open_app(config, secrets) as app:
         try:
             app.pipeline.run_cycle()
@@ -177,6 +191,7 @@ def _cmd_run_once(args: argparse.Namespace) -> int:
 
 def _cmd_watch(args: argparse.Namespace) -> int:
     config, secrets = _load(args)
+    _require_production(secrets)
     interval_s = config.runtime.poll_interval_minutes * 60
     signal.signal(signal.SIGTERM, _exit_on_sigterm)
     with open_app(config, secrets) as app:
@@ -244,9 +259,16 @@ def _cmd_check_config(args: argparse.Namespace) -> int:
         return 1
     register_secrets(*secrets.redaction_values())
     print(f"Secrets: all present ({env_file} or environment)")
+    print(f"eBay environment: {_describe_environment(secrets)}")
     if args.live:
         ok = _live_checks(config, secrets) and ok
     return 0 if ok else 1
+
+
+def _describe_environment(secrets: Secrets) -> str:
+    if secrets.ebay_environment == "sandbox":
+        return "sandbox (test listings only, not real eBay)"
+    return secrets.ebay_environment
 
 
 def _print_database_stats(config: AppConfig) -> None:
@@ -303,6 +325,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
     tz = ZoneInfo(config.telegram.timezone)
     options = config.search.buying_options
     rules = RuleEngine(config.rules, config.price)
+    if secrets.ebay_environment != "production":
+        print(f"eBay environment: {_describe_environment(secrets)}")
     with open_ebay(config, secrets) as ebay:
         for marketplace in marketplaces:
             try:

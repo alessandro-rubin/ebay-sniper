@@ -18,6 +18,7 @@ from factories import (
 SECRET_ENV_VARS = (
     "EBAY_CLIENT_ID",
     "EBAY_CLIENT_SECRET",
+    "EBAY_ENVIRONMENT",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
 )

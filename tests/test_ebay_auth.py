@@ -9,7 +9,14 @@ import respx
 from pydantic import SecretStr
 
 from ebay_sniper.ebay.auth import PUBLIC_SCOPE, EbayAppAuth, EbayAuthError, TokenProvider
-from factories import EBAY_CLIENT_ID, EBAY_CLIENT_SECRET, TOKEN_URL, load_fixture
+from ebay_sniper.ebay.endpoints import API_ROOTS
+from factories import (
+    EBAY_CLIENT_ID,
+    EBAY_CLIENT_SECRET,
+    SANDBOX_TOKEN_URL,
+    TOKEN_URL,
+    load_fixture,
+)
 
 
 class FakeClock:
@@ -53,6 +60,18 @@ def test_token_request_uses_basic_auth_and_form_body(
         "grant_type": ["client_credentials"],
         "scope": [PUBLIC_SCOPE],
     }
+
+
+def test_sandbox_token_endpoint_with_the_same_scope(respx_mock: respx.MockRouter) -> None:
+    route = respx_mock.post(SANDBOX_TOKEN_URL).respond(json=load_fixture("token.json"))
+    provider = TokenProvider(
+        httpx.Client(),
+        SecretStr(EBAY_CLIENT_ID),
+        SecretStr(EBAY_CLIENT_SECRET),
+        api_root=API_ROOTS["sandbox"],
+    )
+    assert provider.get() == "test-access-token"
+    assert parse_qs(route.calls.last.request.content.decode())["scope"] == [PUBLIC_SCOPE]
 
 
 def test_token_is_cached_until_shortly_before_expiry(

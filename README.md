@@ -19,9 +19,12 @@ milestones are listed in `CLAUDE.md`.
    <https://developer.ebay.com>, then a Production keyset. To activate it, eBay
    asks for an endpoint for Marketplace Account Deletion notifications or an
    exemption: choose the exemption (this app does not store eBay user data).
+   A Sandbox keyset (`EBAY_ENVIRONMENT=sandbox`) is enough to try the
+   credentials and `search`, but the sandbox holds only test listings, so
+   `run-once` and `watch` refuse it.
 2. **Telegram bot**: create a bot with @BotFather, send it a message, then read
    your chat id from `https://api.telegram.org/bot<TOKEN>/getUpdates`.
-3. **Secrets**: `cp .env.example .env` and fill in the four values. Variables
+3. **Secrets**: `cp .env.example .env` and fill in the values. Variables
    set in the environment take precedence over `.env`.
 4. **Configuration**: review `config.toml` (queries, marketplaces, price cap,
    postal code).

@@ -84,6 +84,7 @@ Modules (`src/ebay_sniper/`; M1 and M2 are implemented, the others are planned):
 | Module | Responsibility |
 | --- | --- |
 | `config.py` | Load `config.toml` (tomllib) and `.env` (pydantic-settings); validate (unknown keys rejected, paths resolved against the config directory); compute API budget |
+| `ebay/endpoints.py` | API roots for production and sandbox; environment of a keyset from its App ID |
 | `ebay/auth.py` | OAuth client-credentials token, cached in memory until shortly before expiry; `httpx.Auth` flow with one refresh on 401 |
 | `ebay/models.py` | Pydantic models for the Browse API fields used (no `seller`) |
 | `ebay/browse.py` | `search`, `search_raw` (sanitized, for fixtures) and `get_item`; retries with backoff on 429/5xx |
@@ -154,6 +155,16 @@ Design choices:
 Verify field names and behaviour against live responses and save sanitized
 responses as test fixtures. The eBay sandbox has almost no real listings, so
 develop against production with low call volume.
+
+- **Sandbox**: `EBAY_ENVIRONMENT=sandbox` in `.env` switches the API root to
+  `https://api.sandbox.ebay.com` (same paths, same OAuth scope URI). App IDs
+  contain `-SBX-` or `-PRD-`, and `Secrets` rejects a keyset that does not
+  match `EBAY_ENVIRONMENT`. `check-config --live` and `search` work in the
+  sandbox; `run-once` and `watch` refuse it, because test listings in the
+  database would also mark the searches as seeded and the first production
+  run would notify everything already online. Verified live on 2026-10-01:
+  token, search and response parsing work; sandbox items have no `image`, so
+  their responses are not useful as fixtures.
 
 - Token: `POST https://api.ebay.com/identity/v1/oauth2/token`, HTTP Basic auth
   with `client_id:client_secret`, body
@@ -254,8 +265,9 @@ responses):
 
 - **M1** (done): config, auth, search, SQLite dedup, Telegram notification for
   every new result, `run-once` and `check-config`, tests with respx fixtures.
-  Still to do with real credentials: `check-config --live`, verify the OR
-  syntax with `search`, replace the synthetic fixtures with live ones.
+  `check-config --live` verified with a sandbox keyset. Still to do with a
+  production keyset: verify the OR syntax with `search`, replace the
+  synthetic fixtures with live ones.
 - **M2** (done): rules (`drop` / `flag`), total price with shipping and import
   charges, auction details (bids, next minimum bid, reserve, end time),
   `getItem` details for candidates. Possible follow-up: re-evaluate listings

@@ -19,6 +19,9 @@ from factories import (
     CONFIG_TOML,
     EBAY_CLIENT_SECRET,
     ITEM_URL,
+    SANDBOX_ENV_FILE_CONTENT,
+    SANDBOX_SEARCH_URL,
+    SANDBOX_TOKEN_URL,
     SEARCH_URL,
     TELEGRAM_API,
     TELEGRAM_BOT_TOKEN,
@@ -153,6 +156,60 @@ def test_check_config_live_failures(
     assert "eBay: FAILED" in out
     assert "Telegram: FAILED" in out
     assert TELEGRAM_BOT_TOKEN not in out
+
+
+@pytest.fixture
+def sandbox_env_path(config_path: Path) -> Path:
+    path = config_path.parent / ".env"
+    path.write_text(SANDBOX_ENV_FILE_CONTENT, encoding="utf-8")
+    return path
+
+
+def test_check_config_live_in_the_sandbox(
+    config_path: Path,
+    sandbox_env_path: Path,
+    respx_mock: respx.MockRouter,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    respx_mock.post(SANDBOX_TOKEN_URL).respond(json=load_fixture("token.json"))
+    respx_mock.post(f"{TELEGRAM_API}/getMe").respond(
+        json={"ok": True, "result": {"username": "spider_watch_bot"}}
+    )
+    respx_mock.post(f"{TELEGRAM_API}/getChat").respond(
+        json={"ok": True, "result": {"type": "private", "first_name": "Ale"}}
+    )
+    assert run(config_path, "check-config", "--live") == 0
+    out = capsys.readouterr().out
+    assert "eBay environment: sandbox" in out
+    assert "eBay: OK" in out
+
+
+def test_search_command_in_the_sandbox(
+    config_path: Path,
+    sandbox_env_path: Path,
+    respx_mock: respx.MockRouter,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    respx_mock.post(SANDBOX_TOKEN_URL).respond(json=load_fixture("token.json"))
+    respx_mock.get(SANDBOX_SEARCH_URL).respond(json=load_fixture("search_empty.json"))
+    assert run(config_path, "search", "spider") == 0
+    out = capsys.readouterr().out
+    assert "eBay environment: sandbox" in out
+    assert "EBAY_IT: 0 matching listings" in out
+
+
+@pytest.mark.parametrize("command", ["run-once", "watch"])
+def test_pipeline_commands_refuse_the_sandbox(
+    config_path: Path,
+    sandbox_env_path: Path,
+    respx_mock: respx.MockRouter,
+    capsys: pytest.CaptureFixture,
+    command: str,
+) -> None:
+    assert run(config_path, command) == 1
+    assert "need a production keyset" in capsys.readouterr().err
+    assert not respx_mock.calls
+    assert not (config_path.parent / "data").exists()
 
 
 def test_invalid_configuration_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
