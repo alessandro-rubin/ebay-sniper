@@ -152,7 +152,7 @@ def test_upgrade_from_the_m1_schema_keeps_the_data(tmp_path: Path) -> None:
     )
     conn.close()
     with Store.open(path) as store:
-        assert store.schema_version == len(MIGRATIONS) == 3
+        assert store.schema_version == len(MIGRATIONS) == 4
         old = store.get("9")
         assert old is not None
         assert (old.title, old.verdict, old.reasons, old.details_fetched, old.vision) == (
@@ -192,3 +192,28 @@ def test_vision_score_round_trip(store: Store) -> None:
     assert store.get(first.listing_id) == scored
     assert store.get(second.listing_id) == failed
     assert store.status_of(first.listing_id) is ListingStatus.BELOW_THRESHOLD
+
+
+def test_near_misses_are_listed_once(store: Store) -> None:
+    page = SearchPage.model_validate(load_fixture("search_ebay_it.json"))
+    first, second, third = listings_from(page)[:3]
+    store.save_cycle(NOW, new=[(x, ListingStatus.PENDING) for x in (first, second, third)])
+
+    def scored(listing: Listing, match: float) -> Listing:
+        return listing.with_vision(
+            VisionScore(match=match, negative=0, colour=0, best_photo=0, photos=1, model="m")
+        )
+
+    store.update_listing(scored(first, 0.5), ListingStatus.BELOW_THRESHOLD)
+    store.update_listing(scored(second, 0.7), ListingStatus.BELOW_THRESHOLD)
+    store.update_listing(scored(third, 0.9), ListingStatus.PENDING)
+    assert [x.listing_id for x in store.near_misses()] == [second.listing_id, first.listing_id]
+    store.mark_digested([second.listing_id], NOW)
+    assert [x.listing_id for x in store.near_misses()] == [first.listing_id]
+
+
+def test_state_values(store: Store) -> None:
+    assert store.get_state("k") is None
+    store.set_state("k", "a")
+    store.set_state("k", "b")
+    assert store.get_state("k") == "b"

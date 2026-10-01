@@ -105,6 +105,11 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE listings ADD COLUMN vision_error TEXT;
     ALTER TABLE runs ADD COLUMN below_threshold INTEGER NOT NULL DEFAULT 0;
     """,
+    # M3: daily digest of the listings below the photo thresholds.
+    """
+    ALTER TABLE listings ADD COLUMN digested_at TEXT;
+    CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    """,
 )
 
 # SQLite limits the number of bound parameters per statement.
@@ -405,6 +410,35 @@ class Store:
     def count_by_status(self) -> dict[ListingStatus, int]:
         rows = self._conn.execute("SELECT status, COUNT(*) FROM listings GROUP BY status")
         return {ListingStatus(row[0]): int(row[1]) for row in rows}
+
+    def near_misses(self) -> list[Listing]:
+        """Listings kept out by the photo thresholds and not in a digest yet, closest first."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM listings WHERE status = ? AND digested_at IS NULL
+            ORDER BY vision_match DESC, listing_id
+            """,
+            (ListingStatus.BELOW_THRESHOLD,),
+        )
+        return [_listing_from_row(row) for row in rows]
+
+    def mark_digested(self, listing_ids: Sequence[str], now: datetime) -> None:
+        with self._transaction():
+            self._conn.executemany(
+                "UPDATE listings SET digested_at = ? WHERE listing_id = ?",
+                ((_to_iso(now), listing_id) for listing_id in listing_ids),
+            )
+
+    def get_state(self, key: str) -> str | None:
+        row = self._conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+        return None if row is None else str(row["value"])
+
+    def set_state(self, key: str, value: str) -> None:
+        self._conn.execute(
+            "INSERT INTO state (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
     def recent_with_photos(self, limit: int) -> list[tuple[Listing, ListingStatus]]:
         """The most recently seen listings that have photos, with their status."""

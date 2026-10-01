@@ -105,7 +105,8 @@ Modules (`src/ebay_sniper/`; M1, M2 and the first part of M3 are implemented):
 | `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
 | `logsetup.py` | Logging to stderr with redaction of registered secrets (tracebacks included) |
 | `retry.py` | Backoff with jitter and `Retry-After` parsing |
-| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`, `calibrate`; later `digest` |
+| `report.py` | Local HTML page of the stored listings with photos (loaded from eBay by the browser) and scores; never published |
+| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`, `calibrate`, `report`, `digest` |
 
 Behaviour implemented in M1 and M2 worth knowing before changing it:
 
@@ -306,8 +307,14 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   useless notification, so bias toward recall. Real labels will come from M4.
 - Do not look at listing photos with a hosted model to label them (hard
   constraint 3): labels come from the user.
-- A daily `digest` of near misses (below threshold, not dropped by rules) is a
-  safety net against false negatives.
+- A daily digest of near misses (status `below_threshold`, so never dropped
+  by the rules) is the safety net against false negatives. The first cycle
+  after `vision.digest_hour` (local time of `[telegram] timezone`) sends one
+  message with the listings not reported yet, closest first (at most 20
+  listed, the rest counted), marks them `digested_at` and records the date in
+  the `state` table; nothing is sent when there are none, and a failed send
+  is retried by the next cycle. `ebay-sniper digest [--dry-run]` does the
+  same on demand. One scheduled task (`run-once`) is enough.
 
 ## Notifications
 
@@ -330,9 +337,11 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   `getItem` details for candidates. Possible follow-up: re-evaluate listings
   dropped for their price when a later search shows a lower price (today a
   price drop below the cap goes unnoticed).
-- **M3** (in progress): vision scoring in shadow mode and `calibrate` are
-  done; still to do: the near-miss `digest`, then turning the filter on with
-  thresholds chosen by the user.
+- **M3** (done): vision scoring, `calibrate`, `report`, daily near-miss
+  digest. Filter on since 2026-10-01 with thresholds chosen by the user
+  (match 0.70, colour -0.03), looser than the calibrated 0.763 / -0.014
+  because no real listing of the watch could be measured. Follow-up: when a
+  real listing of the target is scored, recalibrate and tighten.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
   Windows Task Scheduler), daily heartbeat and alert after repeated failures
@@ -348,6 +357,8 @@ uv run ebay-sniper check-config [--live]
 uv run ebay-sniper search "<query>" -m EBAY_IT [--save-json tests/fixtures/x.json]
 uv run ebay-sniper notify-test ["<query>"] [-m EBAY_IT]   # newest result to Telegram, marked [TEST]
 uv run ebay-sniper calibrate [-n 300] [--show 20]        # needs the vision extra
+uv run ebay-sniper report [--match 0.76 --colour -0.01]  # HTML page in data/, opens the browser
+uv run ebay-sniper digest [--dry-run]                    # near misses to Telegram now
 uv run pytest
 uv run pytest -m vision      # loads the real image model
 uv run ruff check . && uv run ruff format .
@@ -386,6 +397,8 @@ images per new listing.
 ## Open questions for the user
 
 - Is the silver case wanted whatever the dial brand (Futura, Limma, Moulin)?
+- Photo thresholds (0.70 / -0.03) are provisional: tighten them once a real
+  listing of the watch has been scored.
 - `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
   higher hard cap) was proposed and not decided yet.
 - Which machine will run the bot, and at what poll interval (pending).
