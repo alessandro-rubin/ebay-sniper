@@ -85,7 +85,7 @@ One poll cycle:
 6. **Notify** via Telegram if the score is above threshold; persist everything,
    including items below threshold, so thresholds can be recalibrated.
 
-Modules (`src/ebay_sniper/`; M1 and M2 are implemented, the others are planned):
+Modules (`src/ebay_sniper/`; M1, M2 and the first part of M3 are implemented):
 
 | Module | Responsibility |
 | --- | --- |
@@ -97,14 +97,15 @@ Modules (`src/ebay_sniper/`; M1 and M2 are implemented, the others are planned):
 | `models.py` | Domain objects: `Money`, `CurrencyConverter`, `Verdict`, `Listing` (built from an `ItemSummary`, merged with `getItem`, `total` = item or current bid + shipping + import charges) |
 | `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings with details, verdict and notification state, established searches, runs with API usage |
 | `rules.py` | Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
-| `vision.py` | (M3) Lazy model load, image download with on-disk cache, embeddings, scoring |
+| `images.py` | eBay image URL sizes; photo download cache on disk (by size and URL, pruned after `image_cache_days`) |
+| `vision.py` | open_clip embedder loaded on first use (torch imported lazily), embedding cache on disk (model + content hash), reference sets, `match` and `colour` scores, thresholds, leave-one-out calibration |
 | `notify/base.py` | `Notifier` protocol and `NotificationError`, so the pipeline does not depend on Telegram |
 | `notify/telegram.py` | Bot API via httpx: photo with caption or silent album plus details message, URL button, fallback to text |
 | `pipeline.py` | One poll cycle wiring the steps above |
 | `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
 | `logsetup.py` | Logging to stderr with redaction of registered secrets (tracebacks included) |
 | `retry.py` | Backoff with jitter and `Retry-After` parsing |
-| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`; later `calibrate`, `digest` |
+| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`, `calibrate`; later `digest` |
 
 Behaviour implemented in M1 and M2 worth knowing before changing it:
 
@@ -260,24 +261,51 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
 
 **Vision** (optional extra `vision`):
 
-- Default model: SigLIP via `open_clip` (`ViT-B-16-SigLIP`, pretrained
-  `webli`), confirmed in `open_clip.list_pretrained()` with open_clip 3.3.0
-  and torch 2.14 (CPU build on Windows). SigLIP 2 models (for example
-  `ViT-B-16-SigLIP2`) are listed too and are a possible upgrade.
-- Embed every photo of the listing, L2-normalize, and score as
-  `max_sim(positives) - max_sim(negatives)` over all listing photos. When the
-  labelled set grows (roughly 30 or more per class) switch to logistic
-  regression or kNN on embeddings.
+- Model: SigLIP via `open_clip` (`ViT-B-16-SigLIP`, pretrained `webli`,
+  about 0.2 s a photo on CPU). Compared on 2026-10-01 with
+  `ViT-B-16-SigLIP-384` and SigLIP 2 (`ViT-B-16-SigLIP2`, `-384`) on the
+  reference sets: none was clearly better, and the default had the widest
+  silver/gold margin and was the fastest. The text tower needs `transformers`
+  (tokenizer), which is in the `vision` extra.
+- **The planned `max_sim(positives) - max_sim(negatives)` score does not work**
+  for the main confusion: the gold-tone variant on a wrist scored higher than
+  every silver positive, because whole-image embeddings weigh composition
+  (hand, wrist, background) about as much as the case colour. Two signals are
+  used instead (`vision.py`):
+  - `match`: highest similarity of any listing photo to any positive (is it
+    this watch model?). Leave-one-out on the references: positives
+    0.81-0.87, all gold-tone variants 0.77-0.85, the same case with a plain
+    dial (Florence) 0.77, every other negative 0.69 or less.
+  - `colour`: projection of the best-matching photos on a silver-minus-gold
+    direction built from four text prompt pairs. References: positives
+    -0.004..+0.037, gold-tone variants -0.047..-0.037.
+- On real traffic (619 stored listings, 2026-10-01): other Futura watches
+  have a median `match` of 0.68 (max 0.80), other spider-themed listings
+  0.61 (max 0.815, an Orient spider web dial). No listing of the target was
+  online, so recall on real eBay photos is still unmeasured; lots and photos
+  where the watch is small are the expected weak spot (consider multi-crop
+  scoring if a real listing scores low). When the labelled set grows (roughly
+  30 or more per class) switch to logistic regression or kNN on embeddings.
+- `vision.filter = false` is shadow mode: scores are computed, stored and
+  shown in the notifications, nothing is filtered. With the filter on,
+  listings below a threshold get status `below_threshold` (never notified,
+  kept for the digest and for recalibration). A listing whose photos cannot
+  be scored is notified anyway with a warning; an unexpected error (for
+  example the model cannot load) is tried once per cycle.
 - Reference sets: `reference_images/positive/` (wanted variant, any angle) and
   `reference_images/negative/` (other colours, damaged pieces, similar but
   different watches). Cache the reference embeddings keyed by model name and
   file hash.
 - The eBay image URL size suffix (for example `s-l225`) can be replaced with a
   larger one (`s-l1600`) for better embeddings; fall back to the original URL.
-- Thresholds are **calibrated**, not guessed: a `calibrate` command scores the
-  labelled set and reports precision/recall at candidate thresholds. Missing
-  the item (false negative) is much worse than a useless notification, so bias
-  toward recall.
+- Thresholds are **calibrated**, not guessed: `calibrate` scores every
+  reference against the others (leave-one-out), suggests thresholds 0.05
+  (`match`) and 0.01 (`colour`) below the lowest positive, then scores the
+  stored listings (photos cached, scores saved, statuses untouched) and lists
+  the closest ones. Missing the item (false negative) is much worse than a
+  useless notification, so bias toward recall. Real labels will come from M4.
+- Do not look at listing photos with a hosted model to label them (hard
+  constraint 3): labels come from the user.
 - A daily `digest` of near misses (below threshold, not dropped by rules) is a
   safety net against false negatives.
 
@@ -302,7 +330,9 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   `getItem` details for candidates. Possible follow-up: re-evaluate listings
   dropped for their price when a later search shows a lower price (today a
   price drop below the cap goes unnoticed).
-- **M3**: vision scoring, `calibrate`, thresholds, near-miss `digest`.
+- **M3** (in progress): vision scoring in shadow mode and `calibrate` are
+  done; still to do: the near-miss `digest`, then turning the filter on with
+  thresholds chosen by the user.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
   Windows Task Scheduler), daily heartbeat and alert after repeated failures
@@ -317,7 +347,9 @@ uv run ebay-sniper --help
 uv run ebay-sniper check-config [--live]
 uv run ebay-sniper search "<query>" -m EBAY_IT [--save-json tests/fixtures/x.json]
 uv run ebay-sniper notify-test ["<query>"] [-m EBAY_IT]   # newest result to Telegram, marked [TEST]
+uv run ebay-sniper calibrate [-n 300] [--show 20]        # needs the vision extra
 uv run pytest
+uv run pytest -m vision      # loads the real image model
 uv run ruff check . && uv run ruff format .
 ```
 
@@ -347,8 +379,9 @@ images per new listing.
   also in fixtures). To test another version without touching `.venv`:
   `UV_PROJECT_ENVIRONMENT=<scratch dir> uv run --python 3.14 pytest`.
 - Unit-test rules and scoring logic with synthetic inputs; the vision model is
-  not loaded in the default test run (mark those tests and skip them unless the
-  `vision` extra is installed).
+  not loaded in the default test run: such tests are marked `vision`
+  (deselected by default, run with `pytest -m vision`) and skipped without
+  the extra. Elsewhere use a fake embedder or scorer (`tests/test_vision.py`).
 
 ## Open questions for the user
 

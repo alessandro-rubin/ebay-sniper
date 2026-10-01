@@ -94,12 +94,21 @@ flag_keywords = [
 flag_condition_ids = [7000]
 
 [vision]
+# Compare the photos of new listings with reference_images/ using a local
+# model. Needs the optional extra: uv sync --extra vision
+enabled = true
+# Chosen on 2026-10-01 over SigLIP 384 and SigLIP 2 (224 and 384): the widest
+# silver/gold margin on the references, and the fastest (about 0.2 s a photo).
 model = "ViT-B-16-SigLIP"
 pretrained = "webli"
 positive_dir = "reference_images/positive"
 negative_dir = "reference_images/negative"
-# TODO: calibrate with the `calibrate` command (M3) instead of guessing.
-notify_threshold = 0.0
+max_photos = 8
+# Shadow mode: scores are shown in the notifications, nothing is filtered.
+# Run `ebay-sniper calibrate`, set the thresholds it suggests, then filter.
+filter = false
+match_threshold = 0.0
+colour_threshold = -1.0
 
 [telegram]
 send_all_photos = true

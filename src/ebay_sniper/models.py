@@ -62,6 +62,27 @@ class CurrencyConverter:
 
 
 @dataclass(frozen=True, slots=True)
+class VisionScore:
+    """How the photos of a listing compare with the reference images.
+
+    All values are cosine similarities of image embeddings, or differences of
+    them, so they depend on the model: thresholds are calibrated per model.
+    """
+
+    # Highest similarity of any photo to any positive reference ("is it this watch?").
+    match: float
+    # Highest similarity of any photo to any negative reference.
+    negative: float
+    # Similarity to a silver-tone description minus a gold-tone one, on the
+    # photos closest to the positives: below zero leans gold-tone.
+    colour: float
+    # Index in Listing.image_urls of the photo closest to the positives.
+    best_photo: int
+    photos: int
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
 class Listing:
     """A listing as seen on one marketplace, optionally enriched by getItem.
 
@@ -99,6 +120,9 @@ class Listing:
     # From the rules.
     verdict: Verdict | None = None
     reasons: tuple[str, ...] = ()
+    # From the image comparison; the error is set when scoring failed.
+    vision: VisionScore | None = None
+    vision_error: str | None = None
 
     @property
     def is_auction(self) -> bool:
@@ -165,6 +189,18 @@ class Listing:
 
     def with_verdict(self, verdict: Verdict, reasons: Sequence[str]) -> Listing:
         return replace(self, verdict=verdict, reasons=tuple(reasons))
+
+    def with_vision(self, score: VisionScore | None, error: str | None = None) -> Listing:
+        return replace(self, vision=score, vision_error=error)
+
+    @property
+    def photos_best_first(self) -> tuple[str, ...]:
+        """The photos with the one closest to the references first."""
+        best = self.vision.best_photo if self.vision else 0
+        if not 0 < best < len(self.image_urls):
+            return self.image_urls
+        urls = self.image_urls
+        return (urls[best], *urls[:best], *urls[best + 1 :])
 
 
 def cheapest_shipping(options: Sequence[ApiShippingOption]) -> Money | None:

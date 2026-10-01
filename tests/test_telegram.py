@@ -13,7 +13,7 @@ from pydantic import SecretStr
 
 from ebay_sniper.config import TelegramConfig
 from ebay_sniper.ebay.models import ItemDetails, SearchPage
-from ebay_sniper.models import CurrencyConverter, Listing, Money, Verdict
+from ebay_sniper.models import CurrencyConverter, Listing, Money, Verdict, VisionScore
 from ebay_sniper.notify.telegram import (
     TelegramClient,
     TelegramError,
@@ -251,3 +251,26 @@ def test_check_describes_bot_and_chat(respx_mock: respx.MockRouter, sleeps: list
     )
     assert make_notifier(sleeps).check() == "bot @spider_watch_bot, chat 'Ale' (private)"
     assert payload(chat) == {"chat_id": TELEGRAM_CHAT_ID}
+
+
+def test_the_photo_closest_to_the_references_comes_first(
+    respx_mock: respx.MockRouter, sleeps: list[float]
+) -> None:
+    album = respx_mock.post(f"{TELEGRAM_API}/sendMediaGroup").respond(json=OK)
+    message = respx_mock.post(f"{TELEGRAM_API}/sendMessage").respond(json=OK)
+    score = VisionScore(match=0.871, negative=0.7, colour=-0.004, best_photo=1, photos=3, model="m")
+    listing = fixture_listings()[0].with_vision(score)
+    make_notifier(sleeps, max_photos=2).notify_listing(listing)
+    assert [item["media"] for item in payload(album)["media"]] == [
+        "https://i.ebayimg.com/images/g/BBBBBBBBBBBBBBBB/s-l1600.jpg",
+        "https://i.ebayimg.com/images/g/AAAAAAAAAAAAAAAA/s-l1600.jpg",
+    ]
+    assert "Photos: match 0.871, colour -0.004 (3 compared)" in str(payload(message)["text"])
+
+
+def test_format_shows_why_the_photos_were_not_checked() -> None:
+    listing = fixture_listings()[0].with_vision(None, "no photo could be downloaded <404>")
+    text = format_listing(listing, tz=ROME, now=NOW)
+    assert text.splitlines()[-1] == (
+        "<b>Photos not checked:</b> no photo could be downloaded &lt;404&gt;"
+    )

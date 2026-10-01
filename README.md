@@ -10,7 +10,8 @@ bidding is prohibited by the eBay User Agreement without eBay's permission.
 See `CLAUDE.md` for design, constraints and milestones.
 
 Status: milestones M1 and M2 (search, deduplication, keyword/condition/price
-rules, item details, Telegram notifications). Vision filtering and the other
+rules, item details, Telegram notifications) and the first part of M3 (photo
+comparison with a local model, in shadow mode, and `calibrate`). The other
 milestones are listed in `CLAUDE.md`.
 
 ## Setup
@@ -40,6 +41,7 @@ uv run ebay-sniper check-config           # configuration, secrets, API budget
 uv run ebay-sniper check-config --live    # also verify eBay and Telegram credentials
 uv run ebay-sniper search "futura (spider, ragno)" -m EBAY_IT -m EBAY_DE
 uv run ebay-sniper notify-test "watch" -m EBAY_US   # send the newest result to Telegram
+uv run ebay-sniper calibrate              # score references and stored listings, suggest thresholds
 uv run ebay-sniper run-once               # one poll cycle, for a scheduler
 uv run ebay-sniper watch                  # poll forever at the configured interval
 ```
@@ -83,6 +85,20 @@ notification, with `[TEST]` before the title. It is sent even if the rules
 would drop it (the verdict is printed), costs two Browse API calls and stores
 nothing. It works with a sandbox keyset too, for example
 `notify-test "watch" -m EBAY_US`.
+
+**Photo comparison.** With `[vision] enabled = true` (and
+`uv sync --extra vision`), the photos of every new listing are compared with
+`reference_images/` by a local SigLIP model: nothing is sent to external
+services. The first use downloads the model (about 800 MB). Two scores appear
+in each notification: `match` (how close the best photo is to the wanted
+watch) and `colour` (silver-tone above zero, gold-tone below). With
+`filter = false` (shadow mode) they are only shown; with `filter = true`
+listings below `match_threshold` or `colour_threshold` are not notified but
+kept in the database. `calibrate` scores each reference image against the
+others, suggests thresholds that keep every positive, then scores the stored
+listings and prints the closest ones, so you can see what the thresholds would
+let through. It makes no Browse API call; photos and embeddings are cached in
+`data/image_cache`.
 
 ## Scheduling
 

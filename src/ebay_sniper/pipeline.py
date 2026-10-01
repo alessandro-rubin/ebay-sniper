@@ -1,4 +1,4 @@
-"""One poll cycle: search, deduplicate, rules, details, notify.
+"""One poll cycle: search, deduplicate, rules, details, photos, notify.
 
 The cycle is idempotent: listings are keyed by their legacy item id, so running
 it twice in a row notifies nothing new the second time. A notification that
@@ -17,10 +17,11 @@ from typing import Protocol
 from ebay_sniper.config import AppConfig
 from ebay_sniper.ebay.browse import EbayApiError
 from ebay_sniper.ebay.models import ItemDetails, SearchPage
-from ebay_sniper.models import Listing, Verdict
+from ebay_sniper.models import Listing, Verdict, VisionScore
 from ebay_sniper.notify.base import NotificationError, Notifier
 from ebay_sniper.rules import RuleEngine
 from ebay_sniper.store import ListingStatus, RunStatus, Store
+from ebay_sniper.vision import VisionError, below_threshold_reason
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,12 @@ class Searcher(Protocol):
     def get_item(self, item_id: str, marketplace: str) -> ItemDetails | None: ...
 
 
+class Classifier(Protocol):
+    """What the pipeline needs from the image comparison."""
+
+    def score(self, image_urls: Sequence[str]) -> VisionScore: ...
+
+
 class CycleError(RuntimeError):
     """The cycle could not do its job, for example because every search failed."""
 
@@ -70,6 +77,10 @@ class CycleReport:
     details_skipped: int = 0
     # getItem answered 404: notified anyway with a warning.
     gone: int = 0
+    scored: int = 0
+    below_threshold: int = 0
+    # Notified anyway, with a warning.
+    vision_failed: int = 0
     notified: int = 0
     notify_failed: int = 0
     suppressed: int = 0
@@ -79,7 +90,7 @@ class CycleReport:
 
     @property
     def status(self) -> RunStatus:
-        if self.searches_failed or self.details_failed or self.notify_failed:
+        if self.searches_failed or self.details_failed or self.vision_failed or self.notify_failed:
             return RunStatus.PARTIAL
         return RunStatus.OK
 
@@ -92,6 +103,8 @@ class CycleReport:
             f"{self.new} new, {self.seeded} seeded, {self.dropped} dropped, "
             f"{self.details} details ({self.details_failed} failed, "
             f"{self.details_skipped} skipped, {self.gone} not found), "
+            f"{self.scored} photo scores ({self.below_threshold} below threshold, "
+            f"{self.vision_failed} failed), "
             f"{self.notified} notified, {self.notify_failed} notification failures, "
             f"{self.suppressed} suppressed, {self.api_calls} API calls"
         )
@@ -105,12 +118,14 @@ class Pipeline:
         store: Store,
         notifier: Notifier,
         *,
+        classifier: Classifier | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._config = config
         self._searcher = searcher
         self._store = store
         self._notifier = notifier
+        self._classifier = classifier
         self._clock = clock
         self._rules = RuleEngine(config.rules, config.price)
 
@@ -126,6 +141,7 @@ class Pipeline:
         try:
             candidates = self._search_phase(report)
             self._details_phase(candidates, report)
+            self._vision_phase(report)
             self._notify_phase(report)
             status = report.status
         except Exception as exc:
@@ -142,6 +158,7 @@ class Pipeline:
                 new_listings=report.new,
                 notified=report.notified,
                 dropped=report.dropped,
+                below_threshold=report.below_threshold,
                 error=error,
             )
         log.info("Cycle done: %s", report.summary())
@@ -267,6 +284,55 @@ class Pipeline:
                 self._store.update_listing(detailed, ListingStatus.DROPPED)
             else:
                 self._store.update_listing(detailed, ListingStatus.PENDING)
+
+    def _vision_phase(self, report: CycleReport) -> None:
+        """Compare the photos of the listings waiting for notification with the references.
+
+        A listing whose photos cannot be scored is notified anyway, with a
+        warning: never trade a notification for completeness.
+        """
+        if self._classifier is None:
+            return
+        broken: str | None = None
+        for listing in self._store.pending():
+            if listing.vision is not None or listing.vision_error is not None:
+                # Scored in an earlier cycle, whose notification failed.
+                continue
+            if not listing.image_urls:
+                # Nothing is broken: notified without a score.
+                self._store.update_listing(
+                    listing.with_vision(None, "the listing has no photos"), ListingStatus.PENDING
+                )
+                continue
+            if broken is not None:
+                error = broken
+            else:
+                try:
+                    score = self._classifier.score(listing.image_urls)
+                except VisionError as exc:
+                    error = str(exc)
+                except Exception as exc:
+                    # For example the model cannot be loaded: no point in
+                    # retrying for every listing of this cycle.
+                    log.exception("Image comparison failed")
+                    broken = error = f"image comparison unavailable ({type(exc).__name__})"
+                else:
+                    self._record_score(listing.with_vision(score), report)
+                    continue
+            report.vision_failed += 1
+            log.warning("Photos of %s not scored: %s", listing.listing_id, error)
+            self._store.update_listing(listing.with_vision(None, error), ListingStatus.PENDING)
+
+    def _record_score(self, listing: Listing, report: CycleReport) -> None:
+        assert listing.vision is not None
+        report.scored += 1
+        reason = below_threshold_reason(listing.vision, self._config.vision)
+        if reason is None:
+            self._store.update_listing(listing, ListingStatus.PENDING)
+            return
+        report.below_threshold += 1
+        log.info("Below threshold %s %r: %s", listing.listing_id, listing.title, reason)
+        self._store.update_listing(listing, ListingStatus.BELOW_THRESHOLD)
 
     def _notify_phase(self, report: CycleReport) -> None:
         if report.new_searches and self._config.runtime.seed_new_searches:

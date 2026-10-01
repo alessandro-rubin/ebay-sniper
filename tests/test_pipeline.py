@@ -8,10 +8,11 @@ import pytest
 from ebay_sniper.config import AppConfig
 from ebay_sniper.ebay.browse import EbayApiError
 from ebay_sniper.ebay.models import ItemDetails, ItemSummary, SearchPage
-from ebay_sniper.models import Listing, Verdict
+from ebay_sniper.models import Listing, Verdict, VisionScore
 from ebay_sniper.notify.base import NotificationError
 from ebay_sniper.pipeline import CycleError, Pipeline
 from ebay_sniper.store import ListingStatus, RunStatus, Store
+from ebay_sniper.vision import VisionError
 from factories import make_item, make_page
 
 Q1 = "futura (spider, ragno)"
@@ -393,3 +394,140 @@ def test_seeded_listings_get_a_verdict_but_no_details(
     assert store.status_of("70") is ListingStatus.SEEDED
     assert stored.verdict is Verdict.DROP
     assert searcher.detail_requests == []
+
+
+class FakeClassifier:
+    """Scores keyed by the first photo URL of a listing."""
+
+    def __init__(self) -> None:
+        self.scores: dict[str, VisionScore | Exception] = {}
+        self.requests: list[tuple[str, ...]] = []
+
+    def score(self, image_urls: Sequence[str]) -> VisionScore:
+        self.requests.append(tuple(image_urls))
+        result = self.scores.get(image_urls[0], vision_score())
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def vision_score(match: float = 0.85, colour: float = 0.01) -> VisionScore:
+    return VisionScore(
+        match=match, negative=0.7, colour=colour, best_photo=0, photos=1, model="test/model"
+    )
+
+
+def first_photo(listing_id: str) -> str:
+    return f"https://i.ebayimg.com/images/g/{listing_id}0/s-l225.jpg"
+
+
+def with_vision(config: AppConfig, **changes: object) -> AppConfig:
+    return config.model_copy(update={"vision": config.vision.model_copy(update=changes)})
+
+
+def vision_pipeline(
+    config: AppConfig,
+    searcher: FakeSearcher,
+    store: Store,
+    notifier: FakeNotifier,
+    classifier: FakeClassifier,
+) -> Pipeline:
+    cycle = Pipeline(config, searcher, store, notifier, classifier=classifier)
+    cycle.run_cycle()  # seeds the searches
+    return cycle
+
+
+def test_shadow_mode_shows_scores_and_filters_nothing(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    classifier.scores[first_photo("80")] = vision_score(match=0.1, colour=-0.5)
+    cycle = vision_pipeline(config, searcher, store, notifier, classifier)
+    searcher.pages[(Q1, IT)] = make_page(make_item("80"))
+    report = cycle.run_cycle()
+    assert (report.scored, report.below_threshold, report.notified) == (1, 0, 1)
+    assert notifier.listings[0].vision == vision_score(match=0.1, colour=-0.5)
+    stored = store.get("80")
+    assert stored is not None
+    assert stored.vision == vision_score(match=0.1, colour=-0.5)
+
+
+def test_filter_keeps_listings_below_the_thresholds_out(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    classifier.scores[first_photo("81")] = vision_score(match=0.80, colour=0.01)
+    classifier.scores[first_photo("82")] = vision_score(match=0.50, colour=0.01)
+    classifier.scores[first_photo("83")] = vision_score(match=0.90, colour=-0.05)
+    filtering = with_vision(config, filter=True, match_threshold=0.7, colour_threshold=-0.02)
+    cycle = vision_pipeline(filtering, searcher, store, notifier, classifier)
+    searcher.pages[(Q1, IT)] = make_page(make_item("81"), make_item("82"), make_item("83"))
+    report = cycle.run_cycle()
+    assert notifier.ids == ["81"]
+    assert (report.scored, report.below_threshold) == (3, 2)
+    assert store.status_of("82") is ListingStatus.BELOW_THRESHOLD
+    assert store.status_of("83") is ListingStatus.BELOW_THRESHOLD
+    row = store._conn.execute(
+        "SELECT below_threshold FROM runs ORDER BY run_id DESC LIMIT 1"
+    ).fetchone()
+    assert row["below_threshold"] == 2
+
+
+def test_listings_are_notified_when_their_photos_cannot_be_scored(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    classifier.scores[first_photo("84")] = VisionError("no photo could be downloaded")
+    filtering = with_vision(config, filter=True, match_threshold=0.99)
+    cycle = vision_pipeline(filtering, searcher, store, notifier, classifier)
+    searcher.pages[(Q1, IT)] = make_page(make_item("84"))
+    report = cycle.run_cycle()
+    assert notifier.ids == ["84"]
+    assert notifier.listings[0].vision_error == "no photo could be downloaded"
+    assert report.vision_failed == 1
+    assert report.status is RunStatus.PARTIAL
+
+
+def test_a_broken_model_is_tried_once_per_cycle(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    classifier.scores[first_photo("85")] = RuntimeError("weights not found")
+    classifier.scores[first_photo("86")] = RuntimeError("weights not found")
+    cycle = vision_pipeline(config, searcher, store, notifier, classifier)
+    searcher.pages[(Q1, IT)] = make_page(make_item("85"), make_item("86"))
+    report = cycle.run_cycle()
+    assert len(classifier.requests) == 1
+    assert sorted(notifier.ids) == ["85", "86"]
+    assert {listing.vision_error for listing in notifier.listings} == {
+        "image comparison unavailable (RuntimeError)"
+    }
+    assert report.vision_failed == 2
+
+
+def test_listings_are_scored_once_even_if_their_notification_is_retried(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    cycle = vision_pipeline(config, searcher, store, notifier, classifier)
+    searcher.pages[(Q1, IT)] = make_page(make_item("87"))
+    notifier.failing = True
+    cycle.run_cycle()
+    notifier.failing = False
+    cycle.run_cycle()
+    assert notifier.ids == ["87"]
+    assert len(classifier.requests) == 1
+
+
+def test_listings_without_photos_are_notified_without_a_score(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    classifier = FakeClassifier()
+    filtering = with_vision(config, filter=True, match_threshold=0.99)
+    cycle = vision_pipeline(filtering, searcher, store, notifier, classifier)
+    searcher.pages[(Q1, IT)] = make_page(make_item("88", images=0))
+    report = cycle.run_cycle()
+    assert notifier.ids == ["88"]
+    assert notifier.listings[0].vision_error == "the listing has no photos"
+    assert classifier.requests == []
+    assert (report.vision_failed, report.status) == (0, RunStatus.OK)

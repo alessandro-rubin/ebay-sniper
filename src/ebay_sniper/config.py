@@ -195,6 +195,8 @@ class RulesConfig(_Section):
 
 
 class VisionConfig(_Section):
+    # Needs the optional extra: uv sync --extra vision
+    enabled: bool = False
     model: str = "ViT-B-16-SigLIP"
     pretrained: str = "webli"
     positive_dir: ConfigPath = Field(
@@ -203,7 +205,19 @@ class VisionConfig(_Section):
     negative_dir: ConfigPath = Field(
         default=Path("reference_images/negative"), validate_default=True
     )
-    notify_threshold: float = 0.0
+    # Photos of a listing that are compared, in listing order.
+    max_photos: int = Field(default=8, ge=1, le=24)
+    # eBay rendition downloaded for the model (its input is a few hundred pixels).
+    image_size: str = Field(default="s-l500", pattern=r"^s-l\d+$")
+    # Days a downloaded photo stays in the cache.
+    image_cache_days: int = Field(default=30, ge=1)
+    # False is shadow mode: scores are shown in the notifications, nothing is
+    # filtered. Turn it on once `calibrate` has suggested the thresholds.
+    filter: bool = False
+    # Listings whose best photo is less similar to the positives are not notified.
+    match_threshold: float = Field(default=0.0, ge=-1, le=1)
+    # Listings that look gold-tone (colour below this) are not notified.
+    colour_threshold: float = Field(default=-1.0, ge=-2, le=2)
 
 
 class TelegramConfig(_Section):

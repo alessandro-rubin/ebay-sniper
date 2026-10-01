@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import html
 import logging
-import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -19,6 +18,7 @@ import httpx
 from pydantic import SecretStr
 
 from ebay_sniper.config import TelegramConfig
+from ebay_sniper.images import resize_ebay_image
 from ebay_sniper.models import CurrencyConverter, Listing, Verdict
 from ebay_sniper.notify.base import NotificationError
 from ebay_sniper.retry import backoff_delay
@@ -31,7 +31,6 @@ LARGE_IMAGE_SIZE = "s-l1600"
 # Characters of the seller's condition notes shown in a notification.
 MAX_NOTES_LENGTH = 300
 
-_EBAY_IMAGE_SIZE = re.compile(r"/s-l\d+(\.(?:jpe?g|png|webp))(?=$|\?)", re.IGNORECASE)
 _FORMAT_NAMES = {
     "AUCTION": "Auction",
     "FIXED_PRICE": "Buy It Now",
@@ -152,7 +151,7 @@ class TelegramNotifier:
         """
         text = format_listing(listing, tz=self._tz, now=self._clock(), converter=self._converter)
         markup = {"inline_keyboard": [[{"text": "Open on eBay", "url": listing.url}]]}
-        photos = listing.image_urls[: self._max_photos]
+        photos = listing.photos_best_first[: self._max_photos]
         if len(photos) == 1 and len(text) <= MAX_CAPTION_LENGTH:
             if self._send_photos(photos, caption=text, markup=markup):
                 return
@@ -212,7 +211,7 @@ class TelegramNotifier:
 
 def upscale_ebay_image(url: str) -> str:
     """Ask eBay's image server for a larger rendition (for example s-l225 to s-l1600)."""
-    return _EBAY_IMAGE_SIZE.sub(rf"/{LARGE_IMAGE_SIZE}\1", url, count=1)
+    return resize_ebay_image(url, LARGE_IMAGE_SIZE)
 
 
 def _photo_variants(photos: Sequence[str]) -> Iterator[tuple[str, ...]]:
@@ -259,7 +258,20 @@ def format_listing(
         found += " (search data only)"
     lines.append(found)
     lines.append(f"Query: <i>{_escape(listing.query)}</i>")
+    vision = describe_vision(listing)
+    if vision:
+        lines.append(vision)
     return "\n".join(lines)
+
+
+def describe_vision(listing: Listing) -> str | None:
+    """The photo scores, to judge them before the thresholds are calibrated."""
+    if listing.vision_error:
+        return f"<b>Photos not checked:</b> {_escape(listing.vision_error)}"
+    score = listing.vision
+    if score is None:
+        return None
+    return f"Photos: match {score.match:.3f}, colour {score.colour:+.3f} ({score.photos} compared)"
 
 
 def format_total(listing: Listing, converter: CurrencyConverter | None) -> str | None:

@@ -5,7 +5,9 @@ import json
 import logging
 import re
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,10 @@ import respx
 
 from ebay_sniper.cli import build_parser, main
 from ebay_sniper.logsetup import RedactingFormatter, register_secrets
+from ebay_sniper.models import Listing, VisionScore
+from ebay_sniper.pipeline import utc_now
+from ebay_sniper.store import ListingStatus, Store
+from ebay_sniper.vision import ReferenceImage, References, VisionError, vision_available
 from factories import (
     CONFIG_TOML,
     EBAY_CLIENT_SECRET,
@@ -28,6 +34,7 @@ from factories import (
     TOKEN_URL,
     load_fixture,
     make_item,
+    make_page,
     make_page_data,
 )
 
@@ -470,3 +477,81 @@ def test_redirected_output_in_a_legacy_encoding_does_not_crash(
     assert r"spider web watch \U0001f577" in out
     assert r"Montre \U0001f577 araign" + "\u00e9e" in err
     assert "Logging error" not in err
+
+
+def test_check_config_reports_the_vision_setup(
+    tmp_path: Path, env_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    (tmp_path / "refs").mkdir()
+    (tmp_path / "refs" / "a.jpg").write_bytes(b"x")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        CONFIG_TOML + '\n[vision]\nenabled = true\npositive_dir = "refs"\nnegative_dir = "none"\n',
+        encoding="utf-8",
+    )
+    code = run(config_path, "check-config")
+    out = capsys.readouterr().out
+    assert "Vision: ViT-B-16-SigLIP/webli, shadow mode" in out
+    assert "Reference images: 1 positive, 0 negative" in out
+    assert code == (0 if vision_available() else 1)
+
+
+class FakeScorer:
+    """Toy vectors: listing photos named "good" match the positives."""
+
+    model_id = "fake/model"
+
+    def references(self) -> References:
+        return References(
+            positives=(
+                ReferenceImage(Path("p1.jpg"), [1.0, 0.0, 0.1]),
+                ReferenceImage(Path("p2.jpg"), [0.98, 0.0, 0.2]),
+            ),
+            negatives=(ReferenceImage(Path("gold.jpg"), [0.95, 0.0, -0.3]),),
+            colour_axis=[0.0, 0.0, 1.0],
+        )
+
+    def score(self, image_urls: Sequence[str]) -> VisionScore:
+        if not image_urls:
+            raise VisionError("no photos")
+        match = 0.99 if "good" in image_urls[0] else 0.2
+        return VisionScore(
+            match=match, negative=0.1, colour=0.15, best_photo=0, photos=1, model=self.model_id
+        )
+
+
+def test_calibrate_suggests_thresholds_and_scores_stored_listings(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    @contextmanager
+    def fake_open_vision(config: object) -> Iterator[FakeScorer]:
+        yield FakeScorer()
+
+    monkeypatch.setattr("ebay_sniper.cli.open_vision", fake_open_vision)
+    monkeypatch.setattr("ebay_sniper.cli.vision_available", lambda: True)
+    page = make_page(
+        make_item("1", title="Good one", images=1),
+        make_item("2", title="Other watch"),
+    )
+    good = Listing.from_summary(page.item_summaries[0], marketplace="EBAY_IT", query="q")
+    good = replace(good, image_urls=("https://i.ebayimg.com/good.jpg",))
+    other = Listing.from_summary(page.item_summaries[1], marketplace="EBAY_IT", query="q")
+    with Store.open(config_path.parent / "data" / "test.sqlite3") as store:
+        store.save_cycle(
+            utc_now(), new=[(good, ListingStatus.SEEDED), (other, ListingStatus.SEEDED)]
+        )
+    assert run(config_path, "calibrate", "--show", "1") == 0
+    out = capsys.readouterr().out
+    # p1 . p2 = 1.0; thresholds 0.05 and 0.01 below the lowest positive.
+    assert "  pos   1.000    0.920   +0.100   p1.jpg: kept" in out
+    assert "gold.jpg: filtered: photos not similar enough" in out
+    assert "match_threshold = 0.95" in out
+    assert "colour_threshold = 0.09" in out
+    assert "Stored listings: 2 scored, 0 failed; 1 would be notified" in out
+    assert "0.990 +0.150 PASS [seeded] Good one" in out
+    assert "Other watch" not in out
+    with Store.open(config_path.parent / "data" / "test.sqlite3") as store:
+        stored = store.get("1")
+        assert stored is not None
+        assert stored.vision is not None
+        assert store.status_of("1") is ListingStatus.SEEDED

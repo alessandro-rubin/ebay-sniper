@@ -25,7 +25,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from ebay_sniper.models import Listing, Money, Verdict
+from ebay_sniper.models import Listing, Money, Verdict, VisionScore
 
 MIGRATIONS: tuple[str, ...] = (
     """
@@ -94,6 +94,17 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE listings ADD COLUMN reasons TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE runs ADD COLUMN dropped INTEGER NOT NULL DEFAULT 0;
     """,
+    # M3: image comparison with the reference sets.
+    """
+    ALTER TABLE listings ADD COLUMN vision_match REAL;
+    ALTER TABLE listings ADD COLUMN vision_negative REAL;
+    ALTER TABLE listings ADD COLUMN vision_colour REAL;
+    ALTER TABLE listings ADD COLUMN vision_best_photo INTEGER;
+    ALTER TABLE listings ADD COLUMN vision_photos INTEGER;
+    ALTER TABLE listings ADD COLUMN vision_model TEXT;
+    ALTER TABLE listings ADD COLUMN vision_error TEXT;
+    ALTER TABLE runs ADD COLUMN below_threshold INTEGER NOT NULL DEFAULT 0;
+    """,
 )
 
 # SQLite limits the number of bound parameters per statement.
@@ -108,6 +119,9 @@ class ListingStatus(StrEnum):
     SEEDED = "seeded"
     # Discarded by the rules; kept to review and tune them.
     DROPPED = "dropped"
+    # Photos not close enough to the wanted variant: kept for the near-miss
+    # digest and to recalibrate the thresholds.
+    BELOW_THRESHOLD = "below_threshold"
     # Over the per-cycle notification cap: summarised, not notified.
     SUPPRESSED = "suppressed"
     # The notification kept failing.
@@ -228,13 +242,15 @@ class Store:
         new_listings: int,
         notified: int,
         dropped: int = 0,
+        below_threshold: int = 0,
         error: str | None = None,
     ) -> None:
         self._conn.execute(
             """
             UPDATE runs
             SET finished_at = ?, status = ?, api_calls = ?, results = ?,
-                new_listings = ?, notified = ?, dropped = ?, error = ?
+                new_listings = ?, notified = ?, dropped = ?, below_threshold = ?,
+                error = ?
             WHERE run_id = ?
             """,
             (
@@ -245,6 +261,7 @@ class Store:
                 new_listings,
                 notified,
                 dropped,
+                below_threshold,
                 error,
                 run_id,
             ),
@@ -389,9 +406,28 @@ class Store:
         rows = self._conn.execute("SELECT status, COUNT(*) FROM listings GROUP BY status")
         return {ListingStatus(row[0]): int(row[1]) for row in rows}
 
+    def recent_with_photos(self, limit: int) -> list[tuple[Listing, ListingStatus]]:
+        """The most recently seen listings that have photos, with their status."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM listings WHERE image_urls != '[]'
+            ORDER BY first_seen_at DESC, origin_date DESC, listing_id LIMIT ?
+            """,
+            (limit,),
+        )
+        return [(_listing_from_row(row), ListingStatus(row["status"])) for row in rows]
+
+    def update_vision(self, listing: Listing) -> None:
+        """Store the photo score of a listing without changing its status (calibration)."""
+        self._conn.execute(
+            f"UPDATE listings SET {', '.join(f'{c} = ?' for c in _VISION_COLUMNS)} "
+            "WHERE listing_id = ?",
+            (*_vision_values(listing.vision), listing.vision_error, listing.listing_id),
+        )
+
 
 # Columns holding Listing data, in the order produced by _listing_values().
-_DATA_COLUMNS = (
+_BASE_COLUMNS = (
     "listing_id",
     "item_id",
     "marketplace",
@@ -424,6 +460,16 @@ _DATA_COLUMNS = (
     "verdict",
     "reasons",
 )
+_VISION_COLUMNS = (
+    "vision_match",
+    "vision_negative",
+    "vision_colour",
+    "vision_best_photo",
+    "vision_photos",
+    "vision_model",
+    "vision_error",
+)
+_DATA_COLUMNS = (*_BASE_COLUMNS, *_VISION_COLUMNS)
 
 
 def _listing_values(listing: Listing) -> tuple[object, ...]:
@@ -453,6 +499,34 @@ def _listing_values(listing: Listing) -> tuple[object, ...]:
         None if listing.reserve_met is None else int(listing.reserve_met),
         listing.verdict,
         json.dumps(list(listing.reasons)),
+        *_vision_values(listing.vision),
+        listing.vision_error,
+    )
+
+
+def _vision_values(score: VisionScore | None) -> tuple[object, ...]:
+    if score is None:
+        return (None,) * 6
+    return (
+        score.match,
+        score.negative,
+        score.colour,
+        score.best_photo,
+        score.photos,
+        score.model,
+    )
+
+
+def _vision_from_row(row: sqlite3.Row) -> VisionScore | None:
+    if row["vision_match"] is None:
+        return None
+    return VisionScore(
+        match=row["vision_match"],
+        negative=row["vision_negative"],
+        colour=row["vision_colour"],
+        best_photo=row["vision_best_photo"],
+        photos=row["vision_photos"],
+        model=row["vision_model"],
     )
 
 
@@ -483,6 +557,8 @@ def _listing_from_row(row: sqlite3.Row) -> Listing:
         reserve_met=None if row["reserve_met"] is None else bool(row["reserve_met"]),
         verdict=Verdict(row["verdict"]) if row["verdict"] else None,
         reasons=tuple(json.loads(row["reasons"])),
+        vision=_vision_from_row(row),
+        vision_error=row["vision_error"],
     )
 
 

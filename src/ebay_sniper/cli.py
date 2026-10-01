@@ -8,6 +8,8 @@
 - ``search``: run one query and print the results, to try out query syntax.
 - ``notify-test``: send the newest result of a query to Telegram, to see a
   real notification end to end without touching the database.
+- ``calibrate``: score the reference images and the stored listings with the
+  image model and suggest the vision thresholds.
 
 Results meant for the user go to stdout, logs go to stderr.
 """
@@ -29,7 +31,7 @@ from types import FrameType
 from zoneinfo import ZoneInfo
 
 from ebay_sniper import __version__
-from ebay_sniper.app import open_app, open_ebay, open_notifier
+from ebay_sniper.app import open_app, open_ebay, open_notifier, open_vision
 from ebay_sniper.config import (
     DEFAULT_CONFIG_PATH,
     MAX_QUERY_LENGTH,
@@ -38,6 +40,7 @@ from ebay_sniper.config import (
     AppConfig,
     ConfigError,
     Secrets,
+    VisionConfig,
     compute_budget,
     default_env_file,
     load_config,
@@ -50,7 +53,17 @@ from ebay_sniper.models import Listing, Verdict
 from ebay_sniper.notify import NotificationError
 from ebay_sniper.pipeline import CycleError, utc_now
 from ebay_sniper.rules import RuleEngine
-from ebay_sniper.store import Store
+from ebay_sniper.store import ListingStatus, Store
+from ebay_sniper.vision import (
+    MATCH_MARGIN,
+    VisionError,
+    VisionScorer,
+    below_threshold_reason,
+    reference_files,
+    score_references,
+    suggest_thresholds,
+    vision_available,
+)
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +149,26 @@ def build_parser() -> argparse.ArgumentParser:
         "-m", "--marketplace", help="marketplace to search (default: the first configured one)"
     )
     notify_test.set_defaults(handler=_cmd_notify_test)
+
+    calibrate = subparsers.add_parser(
+        "calibrate",
+        help="Score the reference images and the stored listings with the image model "
+        "and suggest the vision thresholds (no Browse API call).",
+    )
+    calibrate.add_argument(
+        "-n",
+        "--listings",
+        type=_bounded_int(0, 10000),
+        default=300,
+        help="most recent stored listings to score (default: %(default)s, 0 = none)",
+    )
+    calibrate.add_argument(
+        "--show",
+        type=_bounded_int(0, 200),
+        default=20,
+        help="best-matching stored listings to print (default: %(default)s)",
+    )
+    calibrate.set_defaults(handler=_cmd_calibrate)
     return parser
 
 
@@ -266,6 +299,7 @@ def _cmd_check_config(args: argparse.Namespace) -> int:
             f"Use fewer queries or marketplaces, or {hint}."
         )
     _print_database_stats(config)
+    ok = _print_vision_status(config) and ok
 
     env_file = _env_file(args)
     try:
@@ -285,6 +319,31 @@ def _describe_environment(secrets: Secrets) -> str:
     if secrets.ebay_environment == "sandbox":
         return "sandbox (test listings only, not real eBay)"
     return secrets.ebay_environment
+
+
+def _print_vision_status(config: AppConfig) -> bool:
+    vision = config.vision
+    if not vision.enabled:
+        print("Vision: disabled")
+        return True
+    positives = len(reference_files(vision.positive_dir))
+    negatives = len(reference_files(vision.negative_dir))
+    mode = (
+        f"filtering (match >= {vision.match_threshold:.3f}, "
+        f"colour >= {vision.colour_threshold:+.3f})"
+        if vision.filter
+        else "shadow mode (scores shown, nothing filtered)"
+    )
+    print(f"Vision: {vision.model}/{vision.pretrained}, {mode}")
+    print(f"  Reference images: {positives} positive, {negatives} negative")
+    ok = True
+    if not vision_available():
+        print("  FAILED: the vision extra is not installed (uv sync --extra vision)")
+        ok = False
+    if not positives:
+        print(f"  FAILED: no images in {vision.positive_dir}")
+        ok = False
+    return ok
 
 
 def _print_database_stats(config: AppConfig) -> None:
@@ -387,6 +446,12 @@ def _cmd_notify_test(args: argparse.Namespace) -> int:
     listing = replace(
         listing.with_verdict(result.verdict, result.reasons), title=f"[TEST] {listing.title}"
     )
+    with open_vision(config) as scorer:
+        if scorer is not None:
+            try:
+                listing = listing.with_vision(scorer.score(listing.image_urls))
+            except VisionError as exc:
+                listing = listing.with_vision(None, str(exc))
     with open_notifier(config, secrets) as notifier:
         try:
             notifier.notify_listing(listing)
@@ -401,7 +466,121 @@ def _cmd_notify_test(args: argparse.Namespace) -> int:
         f"verdict {result.verdict.upper()}"
         + (f": {'; '.join(result.reasons)}" if result.reasons else "")
     )
+    if listing.vision is not None:
+        print(f"  photos: match {listing.vision.match:.3f}, colour {listing.vision.colour:+.3f}")
+    elif listing.vision_error:
+        print(f"  photos not scored: {listing.vision_error}")
     return 0
+
+
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if not vision_available():
+        print("The vision extra is not installed: uv sync --extra vision")
+        return 1
+    # Calibration also works before vision is enabled in the configuration.
+    config = config.model_copy(
+        update={"vision": config.vision.model_copy(update={"enabled": True})}
+    )
+    with open_vision(config) as scorer:
+        assert scorer is not None
+        try:
+            refs = scorer.references()
+        except VisionError as exc:
+            print(f"Reference images: {exc}")
+            return 1
+        if len(refs.positives) < 2:
+            print("At least two positive reference images are needed to calibrate.")
+            return 1
+        results = score_references(refs, scorer.model_id)
+        match_threshold, colour_threshold = suggest_thresholds(results)
+        suggested = config.vision.model_copy(
+            update={
+                "filter": True,
+                "match_threshold": match_threshold,
+                "colour_threshold": colour_threshold,
+            }
+        )
+        print(f"Model: {scorer.model_id}")
+        print("Reference images, each scored against all the others:")
+        print("        match  negative  colour   at the suggested thresholds")
+        notified_negatives = 0
+        for result in results:
+            score = result.score
+            reason = below_threshold_reason(score, suggested)
+            if result.positive:
+                outcome = "kept" if reason is None else f"LOST: {reason}"
+            else:
+                outcome = "NOTIFIED" if reason is None else f"filtered: {reason}"
+                notified_negatives += reason is None
+            label = "pos" if result.positive else "neg"
+            print(
+                f"  {label}  {score.match:6.3f}  {score.negative:7.3f}  {score.colour:+7.3f}"
+                f"   {result.path.name}: {outcome}"
+            )
+        print(
+            f"The suggested thresholds keep all {len(refs.positives)} positives; "
+            f"{notified_negatives} of {len(refs.negatives)} negatives would still be notified."
+        )
+        print(
+            f"The match threshold sits {MATCH_MARGIN} below the lowest positive: listing "
+            "photos are usually worse than the references, so check stored listings too."
+        )
+        print("To filter, set in [vision]:")
+        print("  filter = true")
+        print(f"  match_threshold = {match_threshold}")
+        print(f"  colour_threshold = {colour_threshold}")
+        if args.listings:
+            _calibrate_listings(config, scorer, suggested, args.listings, args.show)
+    return 0
+
+
+def _calibrate_listings(
+    config: AppConfig, scorer: VisionScorer, suggested: VisionConfig, limit: int, show: int
+) -> None:
+    """Score stored listings, save the scores and show which would be notified."""
+    path = config.runtime.database_path
+    if not path.exists():
+        print(f"No database yet ({path}): run run-once to collect listings first.")
+        return
+    scored: list[tuple[Listing, ListingStatus]] = []
+    failed = 0
+    with Store.open(path) as store:
+        rows = store.recent_with_photos(limit)
+        print(f"Scoring the {len(rows)} most recent stored listings with photos...")
+        for done, (listing, status) in enumerate(rows, start=1):
+            try:
+                listing = listing.with_vision(scorer.score(listing.image_urls))
+            except VisionError as exc:
+                failed += 1
+                listing = listing.with_vision(None, str(exc))
+            else:
+                scored.append((listing, status))
+            store.update_vision(listing)
+            if done % 25 == 0:
+                log.info("Scored %d of %d listings", done, len(rows))
+    passing = sum(
+        1
+        for listing, _ in scored
+        if listing.vision and below_threshold_reason(listing.vision, suggested) is None
+    )
+    print(
+        f"Stored listings: {len(scored)} scored, {failed} failed; "
+        f"{passing} would be notified at the suggested thresholds."
+    )
+    ranked = sorted(
+        scored, key=lambda row: row[0].vision.match if row[0].vision else 0.0, reverse=True
+    )
+    if show and ranked:
+        print(f"The {min(show, len(ranked))} closest to the positives:")
+    for listing, status in ranked[:show]:
+        assert listing.vision is not None
+        reason = below_threshold_reason(listing.vision, suggested)
+        print(
+            f"  {listing.vision.match:.3f} {listing.vision.colour:+.3f} "
+            f"{'PASS' if reason is None else '    '} [{status}] {listing.title}"
+        )
+        print(f"  {'':20}{listing.url}")
 
 
 def _input_error(query: str, marketplaces: Sequence[str]) -> str | None:

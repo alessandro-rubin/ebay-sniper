@@ -18,6 +18,8 @@ vision = [
     "pillow>=10.3",
     "torch>=2.3",
     "torchvision>=0.18",
+    # Tokenizer of the SigLIP text tower (the gold/silver colour probe).
+    "transformers>=4.40",
 ]
 
 [project.scripts]
@@ -58,5 +60,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# Tests that load the real image model are opt-in: uv run pytest -m vision
+addopts = "-ra -m 'not vision'"
+markers = ["vision: loads the real image model (needs the vision extra and a download)"]
 filterwarnings = ["error"]

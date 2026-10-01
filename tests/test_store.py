@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ebay_sniper.ebay.models import ItemDetails, SearchPage
-from ebay_sniper.models import Listing, Money, Verdict
+from ebay_sniper.models import Listing, Money, Verdict, VisionScore
 from ebay_sniper.store import MIGRATIONS, ListingStatus, RunStatus, Store
 from factories import load_fixture, make_item, make_page
 
@@ -152,14 +152,15 @@ def test_upgrade_from_the_m1_schema_keeps_the_data(tmp_path: Path) -> None:
     )
     conn.close()
     with Store.open(path) as store:
-        assert store.schema_version == len(MIGRATIONS) == 2
+        assert store.schema_version == len(MIGRATIONS) == 3
         old = store.get("9")
         assert old is not None
-        assert (old.title, old.verdict, old.reasons, old.details_fetched) == (
+        assert (old.title, old.verdict, old.reasons, old.details_fetched, old.vision) == (
             "Old",
             None,
             (),
             False,
+            None,
         )
         assert [listing.listing_id for listing in store.pending()] == ["9"]
 
@@ -175,3 +176,19 @@ def test_update_listing_stores_details_and_verdict(store: Store) -> None:
     assert store.get(listing.listing_id) == detailed
     store.update_listing(detailed, ListingStatus.DROPPED)
     assert store.status_of(listing.listing_id) is ListingStatus.DROPPED
+
+
+def test_vision_score_round_trip(store: Store) -> None:
+    page = SearchPage.model_validate(load_fixture("search_ebay_it.json"))
+    first, second = listings_from(page)[:2]
+    store.save_cycle(NOW, new=[(first, ListingStatus.PENDING), (second, ListingStatus.PENDING)])
+    score = VisionScore(
+        match=0.84, negative=0.71, colour=0.012, best_photo=2, photos=4, model="m/p"
+    )
+    scored = first.with_vision(score)
+    failed = second.with_vision(None, "could not download the photos")
+    store.update_listing(scored, ListingStatus.BELOW_THRESHOLD)
+    store.update_listing(failed, ListingStatus.PENDING)
+    assert store.get(first.listing_id) == scored
+    assert store.get(second.listing_id) == failed
+    assert store.status_of(first.listing_id) is ListingStatus.BELOW_THRESHOLD
