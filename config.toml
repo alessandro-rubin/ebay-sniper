@@ -11,14 +11,27 @@ buying_options = ["FIXED_PRICE", "AUCTION", "BEST_OFFER"]
 # One page per search, newest first (max 200).
 results_per_query = 100
 # eBay keyword syntax: space = AND, (a, b) = OR. At most 100 characters each:
-# the Browse API truncates longer queries. The documentation only shows one OR
-# group per query: check queries with two groups against the live API, e.g.
-#   uv run ebay-sniper search "(spider, spiderweb) (watch, quartz)" -m EBAY_US
+# the Browse API truncates longer queries. Several OR groups per query work.
+# A query with an OR group is matched literally (no plurals, synonyms or
+# compounds: "watches" does not match "watch"), so list the variants.
+# Accents are ignored. Try queries with:
+#   uv run ebay-sniper search "(spider, spiderweb) (watch, watches)" -m EBAY_US
+#
+# Measured on 2026-10-01 over the five marketplaces: the brand queries bring
+# under one new listing a day except the third (about 3.5, mostly other Futura
+# watches); the generic English one about 25, 5 after the Spider-Man drops in
+# [rules]; the generic IT/ES and DE/FR ones under one. A "melting / dali /
+# asymmetric" query found nothing anywhere in literal mode.
 queries = [
-    "futura (spider, spiderweb, spiderwebs, ragno, ragnatela, spinne, spinnennetz, araignee)",
-    "(spider, spiderweb, spiderwebs) (watch, quartz)",
-    "(orologio, uhr, montre, reloj) (ragnatela, spinnennetz, araignee, arana)",
-    "(melting, dali, asymmetrical, asymmetric) watch (spider, web)",
+    # Brand with the spider in any language, then brand with any watch word
+    # (sellers who write "Futura Quartz" without mentioning the spider).
+    "futura (spider, spiders, spiderweb, spiderwebs, web, ragno, ragni, ragnatela, ragnatele)",
+    "futura (spinne, spinnen, spinnennetz, spinnweben, araignee, araignees, arana, telarana)",
+    "futura (watch, watches, wristwatch, orologio, orologi, uhr, damenuhr, montre, montres, reloj)",
+    # Generic titles from sellers who do not know the brand.
+    "(spider, spiders, spiderweb, spiderwebs, cobweb) (watch, watches, wristwatch, wristwatches)",
+    "(orologio, orologi, orologino, reloj, relojes) (ragno, ragni, ragnatela, ragnatele, arana, telarana)",
+    "(uhr, uhren, armbanduhr, damenuhr, montre, montres) (spinne, spinnen, spinnennetz, araignee)",
 ]
 
 [price]
@@ -37,10 +50,15 @@ exchange_rates = { USD = 0.86, GBP = 1.15 }
 # Checked in the title and in the seller's condition notes, never in the full
 # description.
 #
-# Dropped: clear physical damage only, since a wrong drop can cost the item.
-# Preceded by a negation ("no cracked crystal", "senza vetro rotto") they only
-# flag the listing.
+# Dropped: clear physical damage, and a few names that can never describe the
+# item. A wrong drop can cost the item, so keep this list short. Preceded by a
+# negation ("no cracked crystal", "senza vetro rotto") they only flag the
+# listing.
 drop_keywords = [
+    # Not the item: licensed characters, about 80% of the new listings of the
+    # generic English query. Punctuation is ignored: "spider man" matches
+    # "Spider-Man".
+    "spider man", "spiderman", "spider verse", "marvel", "venom", "miles morales",
     # EN
     "cracked crystal", "broken crystal", "cracked glass", "broken glass",
     "missing hand*", "broken lug*", "broken case",

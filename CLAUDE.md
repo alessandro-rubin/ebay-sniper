@@ -199,8 +199,28 @@ responses):
 - `q` is truncated beyond **100 characters** (a lost closing parenthesis would
   change the query): `config.py` rejects longer queries, `*` and nested or
   unbalanced parentheses. The documented OR form is "comma-separated keywords
-  surrounded by a single pair of parentheses"; queries with **two OR groups**
-  are not documented and must be checked live with `ebay-sniper search`.
+  surrounded by a single pair of parentheses"; queries with two OR groups
+  are not documented (they work, see below).
+
+Verified live with `search` on 2026-10-01 (EBAY_US, EBAY_FR), by comparing
+result totals and, on small queries, the actual sets of `legacyItemId`:
+
+- `(a, b)` is a real OR, independent of order and position, and **two OR
+  groups work** as an AND of ORs. A comma without parentheses is an AND; a
+  single word in parentheses behaves like a plain word.
+- **A query with an OR group is matched literally**, plain words included:
+  eBay's query expansion is off. Plain queries also match synonyms ("watch"
+  matches "watching", "sentinel", "sentry", "scout"), the category (items in
+  "Wristwatches" without "watch" in the title) and loose variants ("web"
+  matches "network", "webbing"). Example: `spider watch` 6284 results,
+  `(spider, spiderweb) watch` 2425, all of them also in the plain set;
+  `futura (spider, web)` = exactly the union of `futura spider` and
+  `futura web` minus 7 noise results matched only by expansion.
+- In literal mode there are **no plurals and no compounds**: "watches" and
+  "wristwatch" do not match "watch" (a "Lot of 10 Watches Spider-Man" was
+  lost). List the variants explicitly in the OR groups.
+- Hyphens split words ("Spider-Man" matches "spider") and accents are
+  ignored ("araignee" = "araignée") in both modes.
 - `limit` max 200 (default 50); `offset` must be a multiple of `limit`.
 - `sort=newlyListed` sorts by `itemOriginDate`, which is **kept when a listing
   is relisted**: on broad queries a relist can fall beyond the first page.
@@ -223,7 +243,10 @@ responses):
 **Rules** (configured in `config.toml`, section `[rules]`):
 
 - `drop`: clear physical damage in title or condition description (cracked
-  crystal, missing hands, broken case or lugs) and prices above the cap.
+  crystal, missing hands, broken case or lugs), prices above the cap, and a
+  few names that can never describe the item (Spider-Man, Marvel: about 80%
+  of the new listings of the generic English query). Never drop on other
+  watch brands: a lot ("lotto orologi") can contain the item.
 - `flag` (notify with a warning, do not drop): "not working", "for parts",
   "needs battery" and condition 7000. On a quartz watch this is often just a
   dead battery.
@@ -265,8 +288,8 @@ responses):
 
 - **M1** (done): config, auth, search, SQLite dedup, Telegram notification for
   every new result, `run-once` and `check-config`, tests with respx fixtures.
-  `check-config --live` verified with a sandbox keyset. Still to do with a
-  production keyset: verify the OR syntax with `search`, replace the
+  `check-config --live` verified with sandbox and production keysets, OR
+  syntax verified live (see the Browse API notes). Still to do: replace the
   synthetic fixtures with live ones.
 - **M2** (done): rules (`drop` / `flag`), total price with shipping and import
   charges, auction details (bids, next minimum bid, reserve, end time),
