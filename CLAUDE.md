@@ -337,9 +337,11 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   `getItem` details for candidates. Possible follow-up: re-evaluate listings
   dropped for their price when a later search shows a lower price (today a
   price drop below the cap goes unnoticed).
-- **M3** (in progress): vision scoring in shadow mode, `calibrate`, `report`
-  and the daily near-miss digest are done; still to do: turning the filter
-  on with thresholds chosen by the user.
+- **M3** (done): vision scoring, `calibrate`, `report`, daily near-miss
+  digest. Filter on since 2026-10-01 with thresholds chosen by the user
+  (match 0.70, colour -0.03), looser than the calibrated 0.763 / -0.014
+  because no real listing of the watch could be measured. Follow-up: when a
+  real listing of the target is scored, recalibrate and tighten.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
   Windows Task Scheduler), daily heartbeat and alert after repeated failures
@@ -395,6 +397,8 @@ images per new listing.
 ## Open questions for the user
 
 - Is the silver case wanted whatever the dial brand (Futura, Limma, Moulin)?
+- Photo thresholds (0.70 / -0.03) are provisional: tighten them once a real
+  listing of the watch has been scored.
 - `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
   higher hard cap) was proposed and not decided yet.
 - Which machine will run the bot, and at what poll interval (pending).

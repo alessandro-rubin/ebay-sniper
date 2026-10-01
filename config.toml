@@ -104,11 +104,15 @@ pretrained = "webli"
 positive_dir = "reference_images/positive"
 negative_dir = "reference_images/negative"
 max_photos = 8
-# Shadow mode: scores are shown in the notifications, nothing is filtered.
-# Run `ebay-sniper calibrate`, set the thresholds it suggests, then filter.
-filter = false
-match_threshold = 0.0
-colour_threshold = -1.0
+# With filter = false (shadow mode) scores are only shown. Listings below a
+# threshold are not notified, but appear in the daily digest below.
+# Chosen by the user on 2026-10-01, looser than the 0.763 / -0.014 that
+# `calibrate` suggested from the references, because no real listing of the
+# watch was available to measure: 13% of the 619 stored listings pass (about
+# one or two notifications a day). Tighten once a real listing is scored.
+filter = true
+match_threshold = 0.70
+colour_threshold = -0.03
 # Daily Telegram summary of the listings kept out by the thresholds (the
 # safety net against a wrong threshold), sent by the first cycle after this
 # hour in the [telegram] timezone. -1 turns it off.
