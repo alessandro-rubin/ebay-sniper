@@ -39,6 +39,7 @@ milestones are listed in `CLAUDE.md`.
 uv run ebay-sniper check-config           # configuration, secrets, API budget
 uv run ebay-sniper check-config --live    # also verify eBay and Telegram credentials
 uv run ebay-sniper search "futura (spider, ragno)" -m EBAY_IT -m EBAY_DE
+uv run ebay-sniper notify-test "watch" -m EBAY_US   # send the newest result to Telegram
 uv run ebay-sniper run-once               # one poll cycle, for a scheduler
 uv run ebay-sniper watch                  # poll forever at the configured interval
 ```
@@ -74,6 +75,14 @@ Browse API call per marketplace). Use it to check the keyword syntax, in
 particular queries with two OR groups such as `(spider, web) (watch, quartz)`,
 which the eBay documentation does not describe explicitly. `--save-json PATH`
 saves the response without seller data, to be used as a test fixture.
+
+**Testing notifications.** `notify-test` takes the newest result of a query
+(default: the first configured query on the first marketplace), fetches its
+details, applies the rules and sends it to Telegram exactly like a real
+notification, with `[TEST]` before the title. It is sent even if the rules
+would drop it (the verdict is printed), costs two Browse API calls and stores
+nothing. It works with a sandbox keyset too, for example
+`notify-test "watch" -m EBAY_US`.
 
 ## Scheduling
 

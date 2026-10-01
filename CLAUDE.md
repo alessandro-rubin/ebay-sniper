@@ -98,7 +98,7 @@ Modules (`src/ebay_sniper/`; M1 and M2 are implemented, the others are planned):
 | `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
 | `logsetup.py` | Logging to stderr with redaction of registered secrets (tracebacks included) |
 | `retry.py` | Backoff with jitter and `Retry-After` parsing |
-| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`; later `calibrate`, `digest` |
+| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`; later `calibrate`, `digest` |
 
 Behaviour implemented in M1 and M2 worth knowing before changing it:
 
@@ -287,6 +287,7 @@ uv sync --extra vision       # adds torch, open_clip, pillow (M3)
 uv run ebay-sniper --help
 uv run ebay-sniper check-config [--live]
 uv run ebay-sniper search "<query>" -m EBAY_IT [--save-json tests/fixtures/x.json]
+uv run ebay-sniper notify-test ["<query>"] [-m EBAY_IT]   # newest result to Telegram, marked [TEST]
 uv run pytest
 uv run ruff check . && uv run ruff format .
 ```

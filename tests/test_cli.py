@@ -361,6 +361,44 @@ def test_search_command(
     assert "Futura Quartz" in text
 
 
+def test_notify_test_sends_the_newest_result(
+    config_path: Path,
+    env_path: Path,
+    respx_mock: respx.MockRouter,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    respx_mock.post(TOKEN_URL).respond(json=load_fixture("token.json"))
+    search = respx_mock.get(SEARCH_URL).respond(json=load_fixture("search_ebay_it.json"))
+    respx_mock.get(url__startswith=f"{ITEM_URL}/").respond(
+        json=load_fixture("item_110000000001.json")
+    )
+    telegram = telegram_route(respx_mock)
+    assert run(config_path, "notify-test") == 0
+    request = search.calls.last.request
+    assert request.url.params["q"] == Q1
+    assert request.url.params["limit"] == "1"
+    assert request.headers["X-EBAY-C-MARKETPLACE-ID"] == "EBAY_IT"
+    assert telegram_methods(telegram) == ["sendMediaGroup", "sendMessage"]
+    text = json.loads(telegram.calls.last.request.content)["text"]
+    assert text.startswith("<b>[TEST] Orologio Futura Quartz")
+    out = capsys.readouterr().out
+    assert "4 photo(s), details fetched, verdict PASS" in out
+    assert not (config_path.parent / "data").exists()
+
+
+def test_notify_test_without_results(
+    config_path: Path,
+    env_path: Path,
+    respx_mock: respx.MockRouter,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    respx_mock.post(TOKEN_URL).respond(json=load_fixture("token.json"))
+    route = respx_mock.get(SEARCH_URL).respond(json=load_fixture("search_empty.json"))
+    assert run(config_path, "notify-test", "spider", "-m", "EBAY_DE") == 1
+    assert route.calls.last.request.headers["X-EBAY-C-MARKETPLACE-ID"] == "EBAY_DE"
+    assert "EBAY_DE: no listings for 'spider'" in capsys.readouterr().out
+
+
 def test_search_command_validates_its_input(
     config_path: Path, env_path: Path, capsys: pytest.CaptureFixture
 ) -> None:

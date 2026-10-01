@@ -6,6 +6,8 @@
 - ``check-config``: validate configuration and secrets and print the daily
   Browse API budget; ``--live`` also verifies the credentials.
 - ``search``: run one query and print the results, to try out query syntax.
+- ``notify-test``: send the newest result of a query to Telegram, to see a
+  real notification end to end without touching the database.
 
 Results meant for the user go to stdout, logs go to stderr.
 """
@@ -19,7 +21,8 @@ import logging
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from types import FrameType
@@ -120,6 +123,19 @@ def build_parser() -> argparse.ArgumentParser:
         "(one marketplace only)",
     )
     search.set_defaults(handler=_cmd_search)
+
+    notify_test = subparsers.add_parser(
+        "notify-test",
+        help="Send the newest result of a query to Telegram as a test notification "
+        "(two Browse API calls, nothing is stored).",
+    )
+    notify_test.add_argument(
+        "query", nargs="?", help="eBay keywords (default: the first configured query)"
+    )
+    notify_test.add_argument(
+        "-m", "--marketplace", help="marketplace to search (default: the first configured one)"
+    )
+    notify_test.set_defaults(handler=_cmd_notify_test)
     return parser
 
 
@@ -309,15 +325,10 @@ def _live_checks(config: AppConfig, secrets: Secrets) -> bool:
 def _cmd_search(args: argparse.Namespace) -> int:
     config, secrets = _load(args)
     query = " ".join(args.query.split())
-    try:
-        validate_query(query)
-    except ValueError as exc:
-        print(f"Invalid query: {exc}")
-        return 1
     marketplaces: list[str] = args.marketplace or config.search.marketplaces[:1]
-    unknown = sorted(set(marketplaces) - SUPPORTED_MARKETPLACES)
-    if unknown:
-        print(f"Unsupported marketplace(s): {', '.join(unknown)}")
+    error = _input_error(query, marketplaces)
+    if error:
+        print(error)
         return 1
     if args.save_json and len(marketplaces) > 1:
         print("--save-json works with one marketplace at a time")
@@ -342,6 +353,67 @@ def _cmd_search(args: argparse.Namespace) -> int:
             _print_page(SearchPage.model_validate(data), marketplace, query, tz, rules)
         print(f"Browse API calls used: {ebay.browse.calls}")
     return 0
+
+
+def _cmd_notify_test(args: argparse.Namespace) -> int:
+    config, secrets = _load(args)
+    query = " ".join((args.query or config.search.queries[0]).split())
+    marketplace: str = args.marketplace or config.search.marketplaces[0]
+    error = _input_error(query, [marketplace])
+    if error:
+        print(error)
+        return 1
+    if secrets.ebay_environment != "production":
+        print(f"eBay environment: {_describe_environment(secrets)}")
+    with open_ebay(config, secrets) as ebay:
+        try:
+            page = ebay.browse.search(
+                query, marketplace, limit=1, buying_options=config.search.buying_options
+            )
+            if not page.item_summaries:
+                print(f"{marketplace}: no listings for {query!r}, try a broader query")
+                return 1
+            listing = Listing.from_summary(
+                page.item_summaries[0], marketplace=marketplace, query=query
+            )
+            details = ebay.browse.get_item(listing.item_id, marketplace)
+        except (EbayApiError, EbayAuthError) as exc:
+            print(f"{marketplace}: FAILED, {exc}")
+            return 1
+    if details is not None:
+        listing = listing.with_details(details)
+    # Printed, not enforced: the point is to see a notification, even of a dropped listing.
+    result = RuleEngine(config.rules, config.price).evaluate(listing)
+    listing = replace(
+        listing.with_verdict(result.verdict, result.reasons), title=f"[TEST] {listing.title}"
+    )
+    with open_notifier(config, secrets) as notifier:
+        try:
+            notifier.notify_listing(listing)
+        except NotificationError as exc:
+            print(f"Telegram: FAILED, {exc}")
+            return 1
+    print(f"Sent to Telegram: {listing.title}")
+    print(f"  {listing.url}")
+    print(
+        f"  {len(listing.image_urls)} photo(s), "
+        f"details {'fetched' if listing.details_fetched else 'not found'}, "
+        f"verdict {result.verdict.upper()}"
+        + (f": {'; '.join(result.reasons)}" if result.reasons else "")
+    )
+    return 0
+
+
+def _input_error(query: str, marketplaces: Sequence[str]) -> str | None:
+    """Why ``query`` cannot be searched on ``marketplaces``, or None."""
+    try:
+        validate_query(query)
+    except ValueError as exc:
+        return f"Invalid query: {exc}"
+    unknown = sorted(set(marketplaces) - SUPPORTED_MARKETPLACES)
+    if unknown:
+        return f"Unsupported marketplace(s): {', '.join(unknown)}"
+    return None
 
 
 def _print_page(
