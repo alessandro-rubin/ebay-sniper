@@ -24,7 +24,11 @@ Despite the repository name, this project does not snipe, bid or buy.
   and a small black spider. Some listings call it "moving spider" (the spider
   may be on a rotating disc).
 - **Wanted variant**: the one in `reference_images/positive/` (silver-tone case,
-  gold-tone inner bezel ring and crown, white MOP web dial).
+  gold-tone inner bezel ring and crown, white MOP web dial). The user also
+  labelled as positive an all-silver one with a "Limma" dial: the silver
+  case with the web dial is what matters, whatever the brand on the dial
+  (to confirm; a "Limma" or "Moulin" title would not match the brand
+  queries, only the generic ones).
 - **Unwanted variant** (confirmed by the user): full gold-tone case (seen as
   "Gold Tone Moving Spider MOP"). The same gold-tone watch also exists with a
   "Moulin" dial; the same melting case exists with plain dials (for example
@@ -348,7 +352,7 @@ images per new listing.
 
 ## Open questions for the user
 
-- Would a silver-tone "Moulin" (same watch, other brand) be wanted?
+- Is the silver case wanted whatever the dial brand (Futura, Limma, Moulin)?
 - `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
   higher hard cap) was proposed and not decided yet.
 - Which machine will run the bot, and at what poll interval (pending).
