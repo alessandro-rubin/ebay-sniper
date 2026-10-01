@@ -24,9 +24,15 @@ Despite the repository name, this project does not snipe, bid or buy.
   and a small black spider. Some listings call it "moving spider" (the spider
   may be on a rotating disc).
 - **Wanted variant**: the one in `reference_images/positive/` (silver-tone case,
-  gold-tone inner bezel ring and crown, white MOP web dial).
-- **Known other variant**: full gold-tone case (seen as "Gold Tone Moving Spider
-  MOP"). Which variants are unwanted is still **TO CONFIRM with the user**.
+  gold-tone inner bezel ring and crown, white MOP web dial). The user also
+  labelled as positive an all-silver one with a "Limma" dial: the silver
+  case with the web dial is what matters, whatever the brand on the dial
+  (to confirm; a "Limma" or "Moulin" title would not match the brand
+  queries, only the generic ones).
+- **Unwanted variant** (confirmed by the user): full gold-tone case (seen as
+  "Gold Tone Moving Spider MOP"). The same gold-tone watch also exists with a
+  "Moulin" dial; the same melting case exists with plain dials (for example
+  "Florence"). All of these are in `reference_images/negative/`.
 - Prices vary wildly: sold for about USD 20 on eBay under a generic title,
   listed around USD 280 by vintage resellers. Generic titles are the main
   opportunity, so searches must be broad and the filtering must be visual.
@@ -79,19 +85,62 @@ One poll cycle:
 6. **Notify** via Telegram if the score is above threshold; persist everything,
    including items below threshold, so thresholds can be recalibrated.
 
-Planned modules (`src/ebay_sniper/`):
+Modules (`src/ebay_sniper/`; M1, M2 and the first part of M3 are implemented):
 
 | Module | Responsibility |
 | --- | --- |
-| `config.py` | Load `config.toml` (tomllib) and `.env` (pydantic-settings); validate; compute API budget |
-| `ebay/auth.py` | OAuth client-credentials token, cached until shortly before expiry |
-| `ebay/browse.py` | `search` and `get_item`, typed models for the fields used, retries with backoff on 429/5xx |
-| `store.py` | SQLite (stdlib `sqlite3`): seen listings, verdicts, scores, notification state, labels |
+| `config.py` | Load `config.toml` (tomllib) and `.env` (pydantic-settings); validate (unknown keys rejected, paths resolved against the config directory); compute API budget |
+| `ebay/endpoints.py` | API roots for production and sandbox; environment of a keyset from its App ID |
+| `ebay/auth.py` | OAuth client-credentials token, cached in memory until shortly before expiry; `httpx.Auth` flow with one refresh on 401 |
+| `ebay/models.py` | Pydantic models for the Browse API fields used (no `seller`) |
+| `ebay/browse.py` | `search`, `search_raw` (sanitized, for fixtures) and `get_item`; retries with backoff on 429/5xx |
+| `models.py` | Domain objects: `Money`, `CurrencyConverter`, `Verdict`, `Listing` (built from an `ItemSummary`, merged with `getItem`, `total` = item or current bid + shipping + import charges) |
+| `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings with details, verdict and notification state, established searches, runs with API usage |
 | `rules.py` | Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
-| `vision.py` | Lazy model load, image download with on-disk cache, embeddings, scoring |
-| `notify/telegram.py` | Bot API via httpx: photo or media group, caption, URL button |
+| `images.py` | eBay image URL sizes; photo download cache on disk (by size and URL, pruned after `image_cache_days`) |
+| `vision.py` | open_clip embedder loaded on first use (torch imported lazily), embedding cache on disk (model + content hash), reference sets, `match` and `colour` scores, thresholds, leave-one-out calibration |
+| `notify/base.py` | `Notifier` protocol and `NotificationError`, so the pipeline does not depend on Telegram |
+| `notify/telegram.py` | Bot API via httpx: photo with caption or silent album plus details message, URL button, fallback to text |
 | `pipeline.py` | One poll cycle wiring the steps above |
-| `cli.py` | `run-once`, `watch`, `check-config`; later `calibrate`, `digest` |
+| `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
+| `logsetup.py` | Logging to stderr with redaction of registered secrets (tracebacks included) |
+| `retry.py` | Backoff with jitter and `Retry-After` parsing |
+| `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`, `calibrate`; later `digest` |
+
+Behaviour implemented in M1 and M2 worth knowing before changing it:
+
+- **Rules** run on every new listing, seeded ones included (for later
+  review). `drop` goes to status `dropped` (never notified, kept with its
+  reasons), otherwise the listing is a candidate. Candidates, newest first, get
+  one `getItem` each up to `runtime.max_details_per_cycle`; the rules then run
+  again with the condition notes and the precise total. Beyond the cap, on a
+  `getItem` error or on a 404 (possibly a listing not yet visible to getItem),
+  the listing is notified with search data (and a warning for the 404):
+  never trade a notification for completeness.
+- **Keyword matching**: NFKD + casefold, accents stripped, punctuation
+  ignored, whole words, trailing `*` for prefixes. A drop keyword with a
+  negation among the three preceding words only flags. Only the title and
+  `conditionDescription` are checked, never the full description.
+- **Price cap**: `Listing.total` in the marketplace currency, converted with
+  `price.exchange_rates`; without a rate the listing is flagged, not dropped.
+  Auctions use the current bid.
+
+- **Seeding**: the first successful run of a (query, marketplace) pair stores
+  its results as `seeded` without notifying them; only later cycles notify.
+  This also applies when a query or marketplace is added
+  (`runtime.seed_new_searches`).
+- **Dedup order**: marketplaces are searched in configuration order and the
+  first occurrence of a legacy id wins, so the first marketplace provides the
+  URL and the currency.
+- **Notification state**: `pending` until sent; a failure keeps it `pending`
+  (retried next cycle, failed ones sorted last), `failed` after 10 attempts;
+  above `max_notifications_per_cycle` the rest become `suppressed` and are
+  listed in one message. Two consecutive failures end the notification phase.
+- **Overlapping runs**: `runs` rows act as a lock; a `running` row younger than
+  30 minutes makes a new cycle skip.
+- **Secrets**: the Telegram token is in every Bot API URL. `TelegramClient`
+  never includes httpx exception texts in its errors, httpx loggers are set to
+  WARNING, and `logsetup` redacts registered secrets in every record.
 
 Design choices:
 
@@ -103,12 +152,26 @@ Design choices:
 - The vision stack is an optional extra (`uv sync --extra vision`) so that M1
   and M2 run without torch.
 - Log with the stdlib `logging` module, never `print` outside the CLI.
+- The CLI reconfigures stdout/stderr with `errors="backslashreplace"`: on
+  Windows, redirected output (scheduled task, log file) uses the ANSI code page
+  (cp1252) and an emoji in an eBay title would otherwise crash `print` and
+  lose log lines.
 
 ## eBay Browse API notes
 
 Verify field names and behaviour against live responses and save sanitized
 responses as test fixtures. The eBay sandbox has almost no real listings, so
 develop against production with low call volume.
+
+- **Sandbox**: `EBAY_ENVIRONMENT=sandbox` in `.env` switches the API root to
+  `https://api.sandbox.ebay.com` (same paths, same OAuth scope URI). App IDs
+  contain `-SBX-` or `-PRD-`, and `Secrets` rejects a keyset that does not
+  match `EBAY_ENVIRONMENT`. `check-config --live` and `search` work in the
+  sandbox; `run-once` and `watch` refuse it, because test listings in the
+  database would also mark the searches as seeded and the first production
+  run would notify everything already online. Verified live on 2026-10-01:
+  token, search and response parsing work; sandbox items have no `image`, so
+  their responses are not useful as fixtures.
 
 - Token: `POST https://api.ebay.com/identity/v1/oauth2/token`, HTTP Basic auth
   with `client_id:client_secret`, body
@@ -137,12 +200,60 @@ develop against production with low call volume.
   per new candidate. Example: 4 queries x 5 marketplaces every 20 minutes =
   1,440 calls per day.
 
+Verified against the Browse API OpenAPI contract v1.20.4 (not yet against live
+responses):
+
+- `q` is truncated beyond **100 characters** (a lost closing parenthesis would
+  change the query): `config.py` rejects longer queries, `*` and nested or
+  unbalanced parentheses. The documented OR form is "comma-separated keywords
+  surrounded by a single pair of parentheses"; queries with two OR groups
+  are not documented (they work, see below).
+
+Verified live with `search` on 2026-10-01 (EBAY_US, EBAY_FR), by comparing
+result totals and, on small queries, the actual sets of `legacyItemId`:
+
+- `(a, b)` is a real OR, independent of order and position, and **two OR
+  groups work** as an AND of ORs. A comma without parentheses is an AND; a
+  single word in parentheses behaves like a plain word.
+- **A query with an OR group is matched literally**, plain words included:
+  eBay's query expansion is off. Plain queries also match synonyms ("watch"
+  matches "watching", "sentinel", "sentry", "scout"), the category (items in
+  "Wristwatches" without "watch" in the title) and loose variants ("web"
+  matches "network", "webbing"). Example: `spider watch` 6284 results,
+  `(spider, spiderweb) watch` 2425, all of them also in the plain set;
+  `futura (spider, web)` = exactly the union of `futura spider` and
+  `futura web` minus 7 noise results matched only by expansion.
+- In literal mode there are **no plurals and no compounds**: "watches" and
+  "wristwatch" do not match "watch" (a "Lot of 10 Watches Spider-Man" was
+  lost). List the variants explicitly in the OR groups.
+- Hyphens split words ("Spider-Man" matches "spider") and accents are
+  ignored ("araignee" = "araignée") in both modes.
+- `limit` max 200 (default 50); `offset` must be a multiple of `limit`.
+- `sort=newlyListed` sorts by `itemOriginDate`, which is **kept when a listing
+  is relisted**: on broad queries a relist can fall beyond the first page.
+- An invalid `X-EBAY-C-MARKETPLACE-ID` silently falls back to `EBAY_US`:
+  marketplaces are validated against a fixed list in `config.py`.
+- `price` is a `ConvertedAmount`: `value`/`currency` in the marketplace
+  currency, `convertedFromValue`/`convertedFromCurrency` with the seller's
+  original amount when eBay converted it.
+- `shippingOptions[].shippingCost` can be missing (`CALCULATED` shipping);
+  `getItem` adds `importCharges` for eBay's international shipping programs.
+- `seller.username` and `itemLocation` (street, city, postal code) are
+  returned: never store them. `getItem` also echoes the buyer's postal code in
+  `shipToLocationUsedForEstimate`; `sanitize_response` strips all of these.
+- `getItems` (batch of 20) is Limited Release: use single `getItem` calls.
+- HTTP 429 comes with `errorId` 2001; users report bursts of 429 well below the
+  daily limit, so keep retries with backoff and give up on long `Retry-After`.
+
 ## Filtering
 
 **Rules** (configured in `config.toml`, section `[rules]`):
 
 - `drop`: clear physical damage in title or condition description (cracked
-  crystal, missing hands, broken case or lugs) and prices above the cap.
+  crystal, missing hands, broken case or lugs), prices above the cap, and a
+  few names that can never describe the item (Spider-Man, Marvel: about 80%
+  of the new listings of the generic English query). Never drop on other
+  watch brands: a lot ("lotto orologi") can contain the item.
 - `flag` (notify with a warning, do not drop): "not working", "for parts",
   "needs battery" and condition 7000. On a quartz watch this is often just a
   dead battery.
@@ -150,23 +261,51 @@ develop against production with low call volume.
 
 **Vision** (optional extra `vision`):
 
-- Default model: SigLIP via `open_clip` (`ViT-B-16-SigLIP`, pretrained
-  `webli`). Check the name with `open_clip.list_pretrained()`; SigLIP 2 models
-  are a possible upgrade.
-- Embed every photo of the listing, L2-normalize, and score as
-  `max_sim(positives) - max_sim(negatives)` over all listing photos. When the
-  labelled set grows (roughly 30 or more per class) switch to logistic
-  regression or kNN on embeddings.
+- Model: SigLIP via `open_clip` (`ViT-B-16-SigLIP`, pretrained `webli`,
+  about 0.2 s a photo on CPU). Compared on 2026-10-01 with
+  `ViT-B-16-SigLIP-384` and SigLIP 2 (`ViT-B-16-SigLIP2`, `-384`) on the
+  reference sets: none was clearly better, and the default had the widest
+  silver/gold margin and was the fastest. The text tower needs `transformers`
+  (tokenizer), which is in the `vision` extra.
+- **The planned `max_sim(positives) - max_sim(negatives)` score does not work**
+  for the main confusion: the gold-tone variant on a wrist scored higher than
+  every silver positive, because whole-image embeddings weigh composition
+  (hand, wrist, background) about as much as the case colour. Two signals are
+  used instead (`vision.py`):
+  - `match`: highest similarity of any listing photo to any positive (is it
+    this watch model?). Leave-one-out on the references: positives
+    0.81-0.87, all gold-tone variants 0.77-0.85, the same case with a plain
+    dial (Florence) 0.77, every other negative 0.69 or less.
+  - `colour`: projection of the best-matching photos on a silver-minus-gold
+    direction built from four text prompt pairs. References: positives
+    -0.004..+0.037, gold-tone variants -0.047..-0.037.
+- On real traffic (619 stored listings, 2026-10-01): other Futura watches
+  have a median `match` of 0.68 (max 0.80), other spider-themed listings
+  0.61 (max 0.815, an Orient spider web dial). No listing of the target was
+  online, so recall on real eBay photos is still unmeasured; lots and photos
+  where the watch is small are the expected weak spot (consider multi-crop
+  scoring if a real listing scores low). When the labelled set grows (roughly
+  30 or more per class) switch to logistic regression or kNN on embeddings.
+- `vision.filter = false` is shadow mode: scores are computed, stored and
+  shown in the notifications, nothing is filtered. With the filter on,
+  listings below a threshold get status `below_threshold` (never notified,
+  kept for the digest and for recalibration). A listing whose photos cannot
+  be scored is notified anyway with a warning; an unexpected error (for
+  example the model cannot load) is tried once per cycle.
 - Reference sets: `reference_images/positive/` (wanted variant, any angle) and
   `reference_images/negative/` (other colours, damaged pieces, similar but
   different watches). Cache the reference embeddings keyed by model name and
   file hash.
 - The eBay image URL size suffix (for example `s-l225`) can be replaced with a
   larger one (`s-l1600`) for better embeddings; fall back to the original URL.
-- Thresholds are **calibrated**, not guessed: a `calibrate` command scores the
-  labelled set and reports precision/recall at candidate thresholds. Missing
-  the item (false negative) is much worse than a useless notification, so bias
-  toward recall.
+- Thresholds are **calibrated**, not guessed: `calibrate` scores every
+  reference against the others (leave-one-out), suggests thresholds 0.05
+  (`match`) and 0.01 (`colour`) below the lowest positive, then scores the
+  stored listings (photos cached, scores saved, statuses untouched) and lists
+  the closest ones. Missing the item (false negative) is much worse than a
+  useless notification, so bias toward recall. Real labels will come from M4.
+- Do not look at listing photos with a hosted model to label them (hard
+  constraint 3): labels come from the user.
 - A daily `digest` of near misses (below threshold, not dropped by rules) is a
   safety net against false negatives.
 
@@ -181,10 +320,19 @@ develop against production with low call volume.
 
 ## Milestones
 
-- **M1**: config, auth, search, SQLite dedup, Telegram notification for every
-  new result, `run-once` and `check-config`, tests with respx fixtures.
-- **M2**: rules (`drop` / `flag`), total price with shipping, auction details.
-- **M3**: vision scoring, `calibrate`, thresholds, near-miss `digest`.
+- **M1** (done): config, auth, search, SQLite dedup, Telegram notification for
+  every new result, `run-once` and `check-config`, tests with respx fixtures.
+  `check-config --live` verified with sandbox and production keysets, OR
+  syntax verified live (see the Browse API notes). Still to do: replace the
+  synthetic fixtures with live ones.
+- **M2** (done): rules (`drop` / `flag`), total price with shipping and import
+  charges, auction details (bids, next minimum bid, reserve, end time),
+  `getItem` details for candidates. Possible follow-up: re-evaluate listings
+  dropped for their price when a later search shows a lower price (today a
+  price drop below the cap goes unnoticed).
+- **M3** (in progress): vision scoring in shadow mode and `calibrate` are
+  done; still to do: the near-miss `digest`, then turning the filter on with
+  thresholds chosen by the user.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
   Windows Task Scheduler), daily heartbeat and alert after repeated failures
@@ -196,9 +344,22 @@ develop against production with low call volume.
 uv sync                      # core + dev dependencies
 uv sync --extra vision       # adds torch, open_clip, pillow (M3)
 uv run ebay-sniper --help
+uv run ebay-sniper check-config [--live]
+uv run ebay-sniper search "<query>" -m EBAY_IT [--save-json tests/fixtures/x.json]
+uv run ebay-sniper notify-test ["<query>"] [-m EBAY_IT]   # newest result to Telegram, marked [TEST]
+uv run ebay-sniper calibrate [-n 300] [--show 20]        # needs the vision extra
 uv run pytest
+uv run pytest -m vision      # loads the real image model
 uv run ruff check . && uv run ruff format .
 ```
+
+`uv sync` resolves the whole project, `vision` extra included, so it needs
+`download.pytorch.org`. Where that host is blocked (for example a sandbox
+with restricted egress), install core and dev tools without the lock:
+`uv venv && uv pip install -e . pytest respx ruff`. `uv.lock` is committed and
+universal (torch `+cpu` from the PyTorch index on Linux, from PyPI elsewhere,
+`tzdata` on Windows only); after changing dependencies, rerun `uv lock` on a
+machine that reaches the PyTorch index.
 
 On Linux, `pyproject.toml` pulls torch and torchvision from the PyTorch
 CPU-only index to avoid multi-gigabyte CUDA wheels. CPU is enough: only a few
@@ -207,14 +368,29 @@ images per new listing.
 ## Testing
 
 - No network access in tests: mock HTTP with `respx`, using sanitized fixtures
-  of real responses in `tests/fixtures/`.
+  of real responses in `tests/fixtures/`. The current fixtures are synthetic
+  (written from the OpenAPI contract, see `tests/fixtures/README.md`); capture
+  live ones with `search --save-json`.
+- Warnings are errors (`filterwarnings = ["error"]`). Test data builders live
+  in `tests/factories.py`; all credentials in tests are fake.
+- The suite passes on Python 3.12 (`.python-version`) and 3.14, on Linux and
+  Windows. From 3.13 `sqlite3` emits `ResourceWarning` for connections that
+  are never closed, which fails the run: always close a `Store` (use `with`,
+  also in fixtures). To test another version without touching `.venv`:
+  `UV_PROJECT_ENVIRONMENT=<scratch dir> uv run --python 3.14 pytest`.
 - Unit-test rules and scoring logic with synthetic inputs; the vision model is
-  not loaded in the default test run (mark those tests and skip them unless the
-  `vision` extra is installed).
+  not loaded in the default test run: such tests are marked `vision`
+  (deselected by default, run with `pytest -m vision`) and skipped without
+  the extra. Elsewhere use a fake embedder or scorer (`tests/test_vision.py`).
 
 ## Open questions for the user
 
-- Which variants are unwanted (gold-tone case? other dials?).
-- Maximum total price.
-- Which machine will run the bot, and at what poll interval.
-- Which marketplaces to include (default: IT, DE, FR, GB, US).
+- Is the silver case wanted whatever the dial brand (Futura, Limma, Moulin)?
+- `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
+  higher hard cap) was proposed and not decided yet.
+- Which machine will run the bot, and at what poll interval (pending).
+- The keyword lists in `config.toml` are a first multilingual draft: review
+  them, especially the drop list (a wrong drop can cost the item).
+- `buyer_postal_code` is committed with `config.toml`: a generic postal code
+  of the area is enough for shipping estimates if the repository is shared.
+- `price.exchange_rates` are approximate values written in September 2026.

@@ -1,0 +1,10 @@
+{
+  "errors": [
+    {
+      "errorId": 2001,
+      "domain": "ACCESS",
+      "category": "REQUEST",
+      "message": "Too many requests. The request limit has been reached for the resource."
+    }
+  ]
+}

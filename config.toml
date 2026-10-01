@@ -2,55 +2,139 @@
 # Values marked TODO still need a decision from the user.
 
 [search]
-marketplaces = ["EBAY_IT", "EBAY_DE", "EBAY_FR", "EBAY_GB", "EBAY_US"]
+marketplaces = ["EBAY_IT", "EBAY_DE", "EBAY_FR", "EBAY_ES", "EBAY_GB", "EBAY_US"]
 delivery_country = "IT"
-# Used for the X-EBAY-C-ENDUSERCTX header (better shipping estimates).
-# TODO: set your own postal code.
+# Used for the X-EBAY-C-ENDUSERCTX header (better shipping estimates). A
+# generic postal code of the area is enough: this file is committed.
 buyer_postal_code = "35100"
 buying_options = ["FIXED_PRICE", "AUCTION", "BEST_OFFER"]
+# One page per search, newest first (max 200).
 results_per_query = 100
-# eBay keyword syntax: space = AND, (a, b) = OR. Verify OR behaviour in M1.
+# eBay keyword syntax: space = AND, (a, b) = OR. At most 100 characters each:
+# the Browse API truncates longer queries. Several OR groups per query work.
+# A query with an OR group is matched literally (no plurals, synonyms or
+# compounds: "watches" does not match "watch"), so list the variants.
+# Accents are ignored. Try queries with:
+#   uv run ebay-sniper search "(spider, spiderweb) (watch, watches)" -m EBAY_US
+#
+# Measured on 2026-10-01 over the five marketplaces: the brand queries bring
+# under one new listing a day except the third (about 3.5, mostly other Futura
+# watches); the generic English one about 25, 5 after the Spider-Man drops in
+# [rules]; the generic IT/ES and DE/FR ones under one. A "melting / dali /
+# asymmetric" query found nothing anywhere in literal mode.
 queries = [
-    "futura (spider, spiderweb, spiderwebs, ragno, ragnatela, spinne, spinnennetz, araignee)",
-    "(spider, spiderweb, spiderwebs) (watch, quartz)",
-    "(orologio, uhr, montre, reloj) (ragnatela, spinnennetz, araignee, arana)",
-    "(melting, dali, asymmetrical, asymmetric) watch (spider, web)",
+    # Brand with the spider in any language, then brand with any watch word
+    # (sellers who write "Futura Quartz" without mentioning the spider).
+    "futura (spider, spiders, spiderweb, spiderwebs, web, ragno, ragni, ragnatela, ragnatele)",
+    "futura (spinne, spinnen, spinnennetz, spinnweben, araignee, araignees, arana, telarana)",
+    "futura (watch, watches, wristwatch, orologio, orologi, uhr, damenuhr, montre, montres, reloj)",
+    # Generic titles from sellers who do not know the brand.
+    "(spider, spiders, spiderweb, spiderwebs, cobweb) (watch, watches, wristwatch, wristwatches)",
+    "(orologio, orologi, orologino, reloj, relojes) (ragno, ragni, ragnatela, ragnatele, arana, telarana)",
+    "(uhr, uhren, armbanduhr, damenuhr, montre, montres) (spinne, spinnen, spinnennetz, araignee)",
 ]
 
 [price]
 currency = "EUR"
-# TODO: maximum total price (item + shipping). Items above it are dropped.
-max_total = 400
+# Maximum total (item or current bid + shipping + import charges, when known).
+# Listings above it are dropped, and are not looked at again if the price
+# drops later.
+max_total = 100
+# Approximate value of one unit in EUR, only used to compare totals in other
+# currencies with max_total (EBAY_GB returns GBP, EBAY_US returns USD). Without
+# a rate the cap is not checked and the listing is flagged. Update occasionally.
+exchange_rates = { USD = 0.86, GBP = 1.15 }
 
 [rules]
-# Dropped when found in title or condition description (case/accent-insensitive).
+# Whole words or phrases, case- and accent-insensitive (write keywords without
+# accents: they also match accented text); a trailing * matches word prefixes.
+# Checked in the title and in the seller's condition notes, never in the full
+# description.
+#
+# Dropped: clear physical damage, and a few names that can never describe the
+# item. A wrong drop can cost the item, so keep this list short. Preceded by a
+# negation ("no cracked crystal", "senza vetro rotto") they only flag the
+# listing.
 drop_keywords = [
-    "cracked crystal", "broken crystal", "vetro rotto", "vetro crepato",
-    "missing hand", "lancetta mancante", "glas gebrochen", "verre casse",
+    # Not the item: licensed characters, about 80% of the new listings of the
+    # generic English query. Punctuation is ignored: "spider man" matches
+    # "Spider-Man".
+    "spider man", "spiderman", "spider verse", "marvel", "venom", "miles morales",
+    # EN
+    "cracked crystal", "broken crystal", "cracked glass", "broken glass",
+    "missing hand*", "broken lug*", "broken case",
+    # IT
+    "vetro rotto", "vetro crepato", "vetro incrinato", "vetrino rotto",
+    "lancetta mancante", "lancette mancanti", "ansa rotta", "anse rotte", "cassa rotta",
+    # DE
+    "glas gebrochen", "glas gesprungen", "glas kaputt", "zeiger fehlt", "zeiger fehlen",
+    # FR
+    "verre casse", "verre fele", "aiguille manquante", "aiguilles manquantes",
+    # ES
+    "cristal roto", "cristal rajado", "aguja rota", "agujas rotas",
 ]
-# Notified with a warning, not dropped: on a quartz watch often just the battery.
+# Notified with a warning, not dropped: on a quartz watch it is often just the
+# battery. Prefixes over-flag a little ("defekt*" also matches "defektfrei"),
+# which only costs a warning.
 flag_keywords = [
-    "not working", "non funzionante", "for parts", "per ricambi",
-    "needs battery", "batteria scarica", "defekt", "ne fonctionne pas",
+    # EN
+    "not working", "non working", "for parts", "for repair", "needs battery",
+    "needs repair", "untested", "as is",
+    # IT
+    "non funzionante", "non funziona", "per ricambi", "da riparare", "da revisionare",
+    "batteria scarica", "non testato",
+    # DE: write an umlaut as its plain vowel ("gepruft"); "geprueft" is another word
+    "defekt*", "ersatzteil*", "bastler*", "reparatur*", "batterie leer",
+    # FR
+    "ne fonctionne pas", "hors service", "pour pieces", "a reparer", "pile a changer",
+    # ES
+    "no funciona", "para piezas", "para reparar", "averiado", "pila agotada",
 ]
 # eBay condition 7000 = for parts or not working.
 flag_condition_ids = [7000]
 
 [vision]
+# Compare the photos of new listings with reference_images/ using a local
+# model. Needs the optional extra: uv sync --extra vision
+enabled = true
+# Chosen on 2026-10-01 over SigLIP 384 and SigLIP 2 (224 and 384): the widest
+# silver/gold margin on the references, and the fastest (about 0.2 s a photo).
 model = "ViT-B-16-SigLIP"
 pretrained = "webli"
 positive_dir = "reference_images/positive"
 negative_dir = "reference_images/negative"
-# TODO: calibrate with the `calibrate` command (M3) instead of guessing.
-notify_threshold = 0.0
+max_photos = 8
+# Shadow mode: scores are shown in the notifications, nothing is filtered.
+# Run `ebay-sniper calibrate`, set the thresholds it suggests, then filter.
+filter = false
+match_threshold = 0.0
+colour_threshold = -1.0
 
 [telegram]
 send_all_photos = true
+# Photos per notification (a Telegram album holds up to 10).
 max_photos = 4
+# Time zone used to show auction end times.
+timezone = "Europe/Rome"
 
 [runtime]
 poll_interval_minutes = 20
+# Relative paths are resolved against the directory of this file.
 database_path = "data/ebay_sniper.sqlite3"
 image_cache_dir = "data/image_cache"
-# Maximum share of the 5,000 daily Browse API calls the config may use.
+# Daily Browse API call limit of the application (5,000 unless eBay raised it).
+daily_call_limit = 5000
+# Maximum share of the daily limit the configuration may use.
 api_budget_share = 0.6
+# Individual notifications per cycle; the excess is listed in one message.
+max_notifications_per_cycle = 10
+# getItem calls per cycle (all photos, condition notes, precise shipping) for
+# new listings that pass the rules; the rest are notified with search data.
+# Counted in the API budget as a worst case: 4 keeps six queries on six
+# marketplaces within budget, and less than one new listing per cycle was
+# measured on 2026-10-01.
+max_details_per_cycle = 4
+# The first successful run of each (query, marketplace) pair records what is
+# already online without notifying it; later runs notify only new listings.
+# Adding a query or a marketplace seeds it the same way.
+seed_new_searches = true
