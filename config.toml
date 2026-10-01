@@ -2,10 +2,10 @@
 # Values marked TODO still need a decision from the user.
 
 [search]
-marketplaces = ["EBAY_IT", "EBAY_DE", "EBAY_FR", "EBAY_GB", "EBAY_US"]
+marketplaces = ["EBAY_IT", "EBAY_DE", "EBAY_FR", "EBAY_ES", "EBAY_GB", "EBAY_US"]
 delivery_country = "IT"
-# Used for the X-EBAY-C-ENDUSERCTX header (better shipping estimates).
-# TODO: set your own postal code.
+# Used for the X-EBAY-C-ENDUSERCTX header (better shipping estimates). A
+# generic postal code of the area is enough: this file is committed.
 buyer_postal_code = "35100"
 buying_options = ["FIXED_PRICE", "AUCTION", "BEST_OFFER"]
 # One page per search, newest first (max 200).
@@ -36,9 +36,10 @@ queries = [
 
 [price]
 currency = "EUR"
-# TODO: maximum total (item or current bid + shipping + import charges, when
-# known). Listings above it are dropped.
-max_total = 400
+# Maximum total (item or current bid + shipping + import charges, when known).
+# Listings above it are dropped, and are not looked at again if the price
+# drops later.
+max_total = 100
 # Approximate value of one unit in EUR, only used to compare totals in other
 # currencies with max_total (EBAY_GB returns GBP, EBAY_US returns USD). Without
 # a rate the cap is not checked and the listing is flagged. Update occasionally.
@@ -120,8 +121,10 @@ api_budget_share = 0.6
 max_notifications_per_cycle = 10
 # getItem calls per cycle (all photos, condition notes, precise shipping) for
 # new listings that pass the rules; the rest are notified with search data.
-# Counted in the API budget as a worst case.
-max_details_per_cycle = 10
+# Counted in the API budget as a worst case: 4 keeps six queries on six
+# marketplaces within budget, and less than one new listing per cycle was
+# measured on 2026-10-01.
+max_details_per_cycle = 4
 # The first successful run of each (query, marketplace) pair records what is
 # already online without notifying it; later runs notify only new listings.
 # Adding a query or a marketplace seeds it the same way.

@@ -25,8 +25,10 @@ Despite the repository name, this project does not snipe, bid or buy.
   may be on a rotating disc).
 - **Wanted variant**: the one in `reference_images/positive/` (silver-tone case,
   gold-tone inner bezel ring and crown, white MOP web dial).
-- **Known other variant**: full gold-tone case (seen as "Gold Tone Moving Spider
-  MOP"). Which variants are unwanted is still **TO CONFIRM with the user**.
+- **Unwanted variant** (confirmed by the user): full gold-tone case (seen as
+  "Gold Tone Moving Spider MOP"). The same gold-tone watch also exists with a
+  "Moulin" dial; the same melting case exists with plain dials (for example
+  "Florence"). All of these are in `reference_images/negative/`.
 - Prices vary wildly: sold for about USD 20 on eBay under a generic title,
   listed around USD 280 by vintage resellers. Generic titles are the main
   opportunity, so searches must be broad and the filtering must be visual.
@@ -346,10 +348,10 @@ images per new listing.
 
 ## Open questions for the user
 
-- Which variants are unwanted (gold-tone case? other dials?).
-- Maximum total price.
-- Which machine will run the bot, and at what poll interval.
-- Which marketplaces to include (default: IT, DE, FR, GB, US).
+- Would a silver-tone "Moulin" (same watch, other brand) be wanted?
+- `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
+  higher hard cap) was proposed and not decided yet.
+- Which machine will run the bot, and at what poll interval (pending).
 - The keyword lists in `config.toml` are a first multilingual draft: review
   them, especially the drop list (a wrong drop can cost the item).
 - `buyer_postal_code` is committed with `config.toml`: a generic postal code
