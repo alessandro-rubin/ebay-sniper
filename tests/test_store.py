@@ -152,7 +152,7 @@ def test_upgrade_from_the_m1_schema_keeps_the_data(tmp_path: Path) -> None:
     )
     conn.close()
     with Store.open(path) as store:
-        assert store.schema_version == len(MIGRATIONS) == 4
+        assert store.schema_version == len(MIGRATIONS) == 5
         old = store.get("9")
         assert old is not None
         assert (old.title, old.verdict, old.reasons, old.details_fetched, old.vision) == (
@@ -183,7 +183,7 @@ def test_vision_score_round_trip(store: Store) -> None:
     first, second = listings_from(page)[:2]
     store.save_cycle(NOW, new=[(first, ListingStatus.PENDING), (second, ListingStatus.PENDING)])
     score = VisionScore(
-        match=0.84, negative=0.71, colour=0.012, best_photo=2, photos=4, model="m/p"
+        match=0.84, negative=0.71, colour=0.012, best_photo=2, photos=4, model="m/p", web=0.021
     )
     scored = first.with_vision(score)
     failed = second.with_vision(None, "could not download the photos")

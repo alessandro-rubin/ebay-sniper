@@ -437,7 +437,7 @@ def format_digest(listings: Sequence[Listing]) -> str:
             title = title[: MAX_DIGEST_TITLE - 3].rstrip() + "..."
         price = f" - {listing.price}" if listing.price is not None else ""
         score = listing.vision
-        scores = f" (match {score.match:.3f}, colour {score.colour:+.3f})" if score else ""
+        scores = f" ({score.describe()})" if score else ""
         lines.append(
             f'- <a href="{html.escape(listing.url)}">{html.escape(title, quote=False)}</a>'
             f"{price}{scores}"

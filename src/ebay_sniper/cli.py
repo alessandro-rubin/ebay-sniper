@@ -204,6 +204,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="mark listings at this colour threshold (default: [vision] if the filter is on)",
     )
+    report.add_argument(
+        "--web",
+        type=float,
+        help="mark listings at this web threshold (default: [vision] if the filter is on)",
+    )
     report.add_argument("--no-open", action="store_true", help="do not open the browser")
     report.set_defaults(handler=_cmd_report)
 
@@ -377,7 +382,7 @@ def _print_vision_status(config: AppConfig) -> bool:
     negatives = len(reference_files(vision.negative_dir))
     mode = (
         f"filtering (match >= {vision.match_threshold:.3f}, "
-        f"colour >= {vision.colour_threshold:+.3f})"
+        f"colour >= {vision.colour_threshold:+.3f}, web >= {vision.web_threshold:+.3f})"
         if vision.filter
         else "shadow mode (scores shown, nothing filtered)"
     )
@@ -520,7 +525,7 @@ def _cmd_notify_test(args: argparse.Namespace) -> int:
         + (f": {'; '.join(result.reasons)}" if result.reasons else "")
     )
     if listing.vision is not None:
-        print(f"  photos: match {listing.vision.match:.3f}, colour {listing.vision.colour:+.3f}")
+        print(f"  photos: {listing.vision.describe()}")
     elif listing.vision_error:
         print(f"  photos not scored: {listing.vision_error}")
     return 0
@@ -546,17 +551,18 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             print("At least two positive reference images are needed to calibrate.")
             return 1
         results = score_references(refs, scorer.model_id)
-        match_threshold, colour_threshold = suggest_thresholds(results)
+        match_threshold, colour_threshold, web_threshold = suggest_thresholds(results)
         suggested = config.vision.model_copy(
             update={
                 "filter": True,
                 "match_threshold": match_threshold,
                 "colour_threshold": colour_threshold,
+                "web_threshold": web_threshold,
             }
         )
         print(f"Model: {scorer.model_id}")
         print("Reference images, each scored against all the others:")
-        print("        match  negative  colour   at the suggested thresholds")
+        print("        match  negative  colour     web   at the suggested thresholds")
         notified_negatives = 0
         for result in results:
             score = result.score
@@ -569,7 +575,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             label = "pos" if result.positive else "neg"
             print(
                 f"  {label}  {score.match:6.3f}  {score.negative:7.3f}  {score.colour:+7.3f}"
-                f"   {result.path.name}: {outcome}"
+                f"  {score.web:+6.3f}   {result.path.name}: {outcome}"
             )
         print(
             f"The suggested thresholds keep all {len(refs.positives)} positives; "
@@ -583,6 +589,7 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
         print("  filter = true")
         print(f"  match_threshold = {match_threshold}")
         print(f"  colour_threshold = {colour_threshold}")
+        print(f"  web_threshold = {web_threshold}")
         if args.listings:
             _calibrate_listings(config, scorer, suggested, args.listings, args.show)
     return 0
@@ -595,14 +602,18 @@ def _cmd_report(args: argparse.Namespace) -> int:
         print(f"No database yet ({path}): run run-once to collect listings first.")
         return 1
     vision = config.vision
-    thresholds: tuple[float, float] | None = None
-    if args.match is not None or args.colour is not None:
-        thresholds = (
-            args.match if args.match is not None else vision.match_threshold,
-            args.colour if args.colour is not None else vision.colour_threshold,
+    overrides = {
+        name: value
+        for name, value in (
+            ("match_threshold", args.match),
+            ("colour_threshold", args.colour),
+            ("web_threshold", args.web),
         )
-    elif vision.filter:
-        thresholds = (vision.match_threshold, vision.colour_threshold)
+        if value is not None
+    }
+    thresholds: VisionConfig | None = None
+    if overrides or vision.filter:
+        thresholds = vision.model_copy(update={"filter": True, **overrides})
     with Store.open(path) as store:
         rows = store.recent_with_photos(args.listings)
     output: Path = args.output or path.parent / "report.html"
@@ -673,7 +684,7 @@ def _calibrate_listings(
         assert listing.vision is not None
         reason = below_threshold_reason(listing.vision, suggested)
         print(
-            f"  {listing.vision.match:.3f} {listing.vision.colour:+.3f} "
+            f"  {listing.vision.match:.3f} {listing.vision.colour:+.3f} {listing.vision.web:+.3f} "
             f"{'PASS' if reason is None else '    '} [{status}] {listing.title}"
         )
         print(f"  {'':20}{listing.url}")

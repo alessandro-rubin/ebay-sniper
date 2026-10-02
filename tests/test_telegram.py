@@ -258,14 +258,17 @@ def test_the_photo_closest_to_the_references_comes_first(
 ) -> None:
     album = respx_mock.post(f"{TELEGRAM_API}/sendMediaGroup").respond(json=OK)
     message = respx_mock.post(f"{TELEGRAM_API}/sendMessage").respond(json=OK)
-    score = VisionScore(match=0.871, negative=0.7, colour=-0.004, best_photo=1, photos=3, model="m")
+    score = VisionScore(
+        match=0.871, negative=0.7, colour=-0.004, best_photo=1, photos=3, model="m", web=0.031
+    )
     listing = fixture_listings()[0].with_vision(score)
     make_notifier(sleeps, max_photos=2).notify_listing(listing)
     assert [item["media"] for item in payload(album)["media"]] == [
         "https://i.ebayimg.com/images/g/BBBBBBBBBBBBBBBB/s-l1600.jpg",
         "https://i.ebayimg.com/images/g/AAAAAAAAAAAAAAAA/s-l1600.jpg",
     ]
-    assert "Photos: match 0.871, colour -0.004 (3 compared)" in str(payload(message)["text"])
+    text = str(payload(message)["text"])
+    assert "Photos: match 0.871, colour -0.004, web +0.031 (3 compared)" in text
 
 
 def test_format_shows_why_the_photos_were_not_checked() -> None:

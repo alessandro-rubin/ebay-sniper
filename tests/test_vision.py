@@ -16,12 +16,13 @@ from ebay_sniper.images import ImageCache, ImageFetchError, resize_ebay_image
 from ebay_sniper.models import Listing, VisionScore
 from ebay_sniper.vision import (
     COLOUR_PROMPTS,
+    WEB_PROMPTS,
     EmbeddingCache,
     References,
     VisionError,
     VisionScorer,
     below_threshold_reason,
-    colour_axis,
+    prompt_axis,
     reference_files,
     score_references,
     score_vectors,
@@ -42,6 +43,8 @@ def unit(*values: float) -> list[float]:
 WANTED = unit(1, 0, 0)
 OTHER = unit(0, 1, 0)
 AXIS = [0.0, 0.0, 1.0]
+# The web probe reuses the second direction.
+WEB_AXIS = [0.0, 1.0, 0.0]
 
 
 def test_resize_ebay_image() -> None:
@@ -49,39 +52,46 @@ def test_resize_ebay_image() -> None:
     assert resize_ebay_image("https://example.com/a.jpg", "s-l500") == "https://example.com/a.jpg"
 
 
-def test_score_vectors_takes_the_best_photo_and_its_colour() -> None:
-    photos = [unit(0.2, 1, -0.5), unit(1, 0.1, 0.3), unit(1, 0.3, -0.2)]
-    score = score_vectors(photos, [WANTED], [OTHER], AXIS, model_id="m")
+def test_score_vectors_takes_the_best_photo_its_colour_and_web() -> None:
+    photos = [unit(0.2, 0.3, -0.5), unit(1, 0.1, 0.3), unit(1, 0.3, -0.2), unit(0.05, 1, 0.9)]
+    score = score_vectors(photos, [WANTED], [OTHER], AXIS, WEB_AXIS, model_id="m")
     assert score.best_photo == 1
     assert score.match == pytest.approx(photos[1][0])
     assert score.negative == pytest.approx(max(p[1] for p in photos))
-    # The most silver-looking of the photos closest to the positives.
+    # The most silver-looking of the three photos closest to the positives...
     assert score.colour == pytest.approx(max(photos[i][2] for i in range(3)))
-    assert (score.photos, score.model) == (3, "m")
+    # ...but the most web-looking of all the photos.
+    assert score.web == pytest.approx(photos[3][1])
+    assert (score.photos, score.model) == (4, "m")
 
 
 def test_score_vectors_needs_photos_and_positives() -> None:
     with pytest.raises(VisionError, match="no photos"):
-        score_vectors([], [WANTED], [], AXIS, model_id="m")
+        score_vectors([], [WANTED], [], AXIS, WEB_AXIS, model_id="m")
     with pytest.raises(VisionError, match="no positive"):
-        score_vectors([WANTED], [], [], AXIS, model_id="m")
-    assert score_vectors([WANTED], [WANTED], [], AXIS, model_id="m").negative == 0.0
+        score_vectors([WANTED], [], [], AXIS, WEB_AXIS, model_id="m")
+    assert score_vectors([WANTED], [WANTED], [], AXIS, WEB_AXIS, model_id="m").negative == 0.0
 
 
-def test_colour_axis_averages_the_prompt_pairs() -> None:
-    assert colour_axis([[1.0, 0.0], [0.5, 0.5]], [[0.0, 1.0], [0.5, -0.5]]) == [0.5, 0.0]
+def test_prompt_axis_averages_the_prompt_pairs() -> None:
+    assert prompt_axis([[1.0, 0.0], [0.5, 0.5]], [[0.0, 1.0], [0.5, -0.5]]) == [0.5, 0.0]
 
 
-def score(match: float, colour: float) -> VisionScore:
-    return VisionScore(match=match, negative=0.0, colour=colour, best_photo=0, photos=1, model="m")
+def score(match: float, colour: float, web: float | None = None) -> VisionScore:
+    return VisionScore(
+        match=match, negative=0.0, colour=colour, best_photo=0, photos=1, model="m", web=web
+    )
 
 
 def test_below_threshold_reason() -> None:
-    shadow = VisionConfig(match_threshold=0.9, colour_threshold=0.5)
-    assert below_threshold_reason(score(0.1, -1.0), shadow) is None
+    shadow = VisionConfig(match_threshold=0.9, colour_threshold=0.5, web_threshold=0.01)
+    assert below_threshold_reason(score(0.1, -1.0, -1.0), shadow) is None
     active = shadow.model_copy(update={"filter": True})
     assert "not similar enough" in (below_threshold_reason(score(0.8, 0.6), active) or "")
     assert "gold-tone" in (below_threshold_reason(score(0.95, 0.4), active) or "")
+    assert "no spider web" in (below_threshold_reason(score(0.95, 0.6, 0.0), active) or "")
+    assert below_threshold_reason(score(0.95, 0.6, 0.02), active) is None
+    # Scored before the web probe existed: not filtered on it.
     assert below_threshold_reason(score(0.95, 0.6), active) is None
 
 
@@ -95,6 +105,7 @@ def test_leave_one_out_and_suggested_thresholds(tmp_path: Path) -> None:
         ),
         negatives=(ReferenceImage(tmp_path / "n1", unit(1, 0, -0.3)),),
         colour_axis=AXIS,
+        web_axis=WEB_AXIS,
     )
     results = score_references(refs, "m")
     assert [(r.path.name, r.positive) for r in results] == [
@@ -106,9 +117,11 @@ def test_leave_one_out_and_suggested_thresholds(tmp_path: Path) -> None:
     assert results[0].score.match == pytest.approx(
         sum(a * b for a, b in zip(*[r.vector for r in refs.positives], strict=True))
     )
-    match, colour = suggest_thresholds(results)
+    match, colour, web = suggest_thresholds(results)
     assert match == round(min(r.score.match for r in results[:2]) - 0.05, 3)
     assert colour == round(min(r.score.colour for r in results[:2]) - 0.01, 3)
+    # p1 has no component along the web axis.
+    assert web == -0.01
 
 
 def test_embedding_cache_computes_each_blob_once(tmp_path: Path) -> None:
@@ -170,7 +183,11 @@ def test_image_cache_prune(tmp_path: Path, respx_mock: respx.MockRouter) -> None
 
 
 class FakeEmbedder:
-    """Image bytes name their direction: b"wanted...", b"other...", b"gold..."."""
+    """Image bytes name their direction: b"wanted...", b"other...", b"gold...".
+
+    Texts: silver-tone along the colour axis, gold-tone against it; spider-web
+    dials along the wanted direction, plain dials against it.
+    """
 
     model_id = "fake/model"
 
@@ -190,9 +207,17 @@ class FakeEmbedder:
         return vectors
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
-        return [
-            [0.0, 0.0, 1.0] if "silver" in t or "steel" in t else [0.0, 0.0, -1.0] for t in texts
-        ]
+        vectors = []
+        for text in texts:
+            if "silver" in text or "steel" in text:
+                vectors.append([0.0, 0.0, 1.0])
+            elif "gold" in text:
+                vectors.append([0.0, 0.0, -1.0])
+            elif "web" in text:
+                vectors.append([1.0, 0.0, 0.0])
+            else:
+                vectors.append([-1.0, 0.0, 0.0])
+        return vectors
 
 
 @pytest.fixture
@@ -236,7 +261,8 @@ def test_scorer_downloads_the_first_photos_and_scores_them(
     assert (result.best_photo, result.photos, result.model) == (1, 2, "fake/model")
     assert result.match > 0.9
     assert result.colour > 0
-    assert len(COLOUR_PROMPTS) == 4
+    assert result.web is not None and result.web > 1
+    assert len(COLOUR_PROMPTS) == len(WEB_PROMPTS) == 4
     # Third photo beyond max_photos: never requested (respx would fail on it).
 
 
@@ -297,11 +323,20 @@ def test_real_model_separates_the_reference_sets(tmp_path: Path) -> None:
         ImageCache(httpx.Client(), tmp_path / "photos"),
     )
     results = score_references(scorer.references(), embedder.model_id)
-    match, colour = suggest_thresholds(results)
+    match, colour, web = suggest_thresholds(results)
     active = config.vision.model_copy(
-        update={"filter": True, "match_threshold": match, "colour_threshold": colour}
+        update={
+            "filter": True,
+            "match_threshold": match,
+            "colour_threshold": colour,
+            "web_threshold": web,
+        }
     )
     gold = [r for r in results if "gold" in r.path.name and "futura" in r.path.name]
     assert gold
     assert all(below_threshold_reason(r.score, active) for r in gold)
+    # The same case with a plain dial is only told apart by the web probe.
+    plain = [r for r in results if "plain-dial" in r.path.name]
+    assert plain
+    assert all("spider web" in (below_threshold_reason(r.score, active) or "") for r in plain)
     assert all(below_threshold_reason(r.score, active) is None for r in results if r.positive)

@@ -98,7 +98,7 @@ Modules (`src/ebay_sniper/`; M1, M2 and the first part of M3 are implemented):
 | `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings with details, verdict and notification state, established searches, runs with API usage |
 | `rules.py` | Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
 | `images.py` | eBay image URL sizes; photo download cache on disk (by size and URL, pruned after `image_cache_days`) |
-| `vision.py` | open_clip embedder loaded on first use (torch imported lazily), embedding cache on disk (model + content hash), reference sets, `match` and `colour` scores, thresholds, leave-one-out calibration |
+| `vision.py` | open_clip embedder loaded on first use (torch imported lazily), embedding cache on disk (model + content hash), reference sets, `match`, `colour` and `web` scores, thresholds, leave-one-out calibration |
 | `notify/base.py` | `Notifier` protocol and `NotificationError`, so the pipeline does not depend on Telegram |
 | `notify/telegram.py` | Bot API via httpx: photo with caption or silent album plus details message, URL button, fallback to text |
 | `pipeline.py` | One poll cycle wiring the steps above |
@@ -271,8 +271,8 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
 - **The planned `max_sim(positives) - max_sim(negatives)` score does not work**
   for the main confusion: the gold-tone variant on a wrist scored higher than
   every silver positive, because whole-image embeddings weigh composition
-  (hand, wrist, background) about as much as the case colour. Two signals are
-  used instead (`vision.py`):
+  (hand, wrist, background) about as much as the case colour. Three signals
+  are used instead (`vision.py`):
   - `match`: highest similarity of any listing photo to any positive (is it
     this watch model?). Leave-one-out on the references: positives
     0.81-0.87, all gold-tone variants 0.77-0.85, the same case with a plain
@@ -280,6 +280,17 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   - `colour`: projection of the best-matching photos on a silver-minus-gold
     direction built from four text prompt pairs. References: positives
     -0.004..+0.037, gold-tone variants -0.047..-0.037.
+  - `web` (added 2026-10-02): projection of every photo (the maximum) on a
+    spider-web-dial-minus-plain-dial direction, four prompt pairs. `match`
+    alone let ordinary Futura watches through: on 2026-10-02 one seller's
+    old DE/FR listings reappeared at once and eight were notified at match
+    0.70-0.72. References: positives +0.017..+0.066 (the lowest is a
+    full-length photo with a small dial), Florence -0.012, other spider
+    dials +0.03..+0.08; stored listings: ordinary Futura watches
+    -0.03..+0.02, spider web watches up to +0.11. It is the only signal that
+    filters Florence. Every photo, not the top 3 by `match`, because a
+    close-up of the dial often ranks low on `match`. Listings scored before
+    it have `web` NULL and are not filtered on it.
 - On real traffic (619 stored listings, 2026-10-01): other Futura watches
   have a median `match` of 0.68 (max 0.80), other spider-themed listings
   0.61 (max 0.815, an Orient spider web dial). No listing of the target was
@@ -301,7 +312,7 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   larger one (`s-l1600`) for better embeddings; fall back to the original URL.
 - Thresholds are **calibrated**, not guessed: `calibrate` scores every
   reference against the others (leave-one-out), suggests thresholds 0.05
-  (`match`) and 0.01 (`colour`) below the lowest positive, then scores the
+  (`match`) and 0.01 (`colour`, `web`) below the lowest positive, then scores the
   stored listings (photos cached, scores saved, statuses untouched) and lists
   the closest ones. Missing the item (false negative) is much worse than a
   useless notification, so bias toward recall. Real labels will come from M4.
@@ -340,8 +351,10 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
 - **M3** (done): vision scoring, `calibrate`, `report`, daily near-miss
   digest. Filter on since 2026-10-01 with thresholds chosen by the user
   (match 0.70, colour -0.03), looser than the calibrated 0.763 / -0.014
-  because no real listing of the watch could be measured. Follow-up: when a
-  real listing of the target is scored, recalibrate and tighten.
+  because no real listing of the watch could be measured. `web` threshold
+  0.005 since 2026-10-02 (calibrated 0.007): 31 of 667 stored listings pass
+  instead of 93. Follow-up: when a real listing of the target is scored,
+  recalibrate and tighten.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
   Windows Task Scheduler), daily heartbeat and alert after repeated failures
@@ -357,7 +370,7 @@ uv run ebay-sniper check-config [--live]
 uv run ebay-sniper search "<query>" -m EBAY_IT [--save-json tests/fixtures/x.json]
 uv run ebay-sniper notify-test ["<query>"] [-m EBAY_IT]   # newest result to Telegram, marked [TEST]
 uv run ebay-sniper calibrate [-n 300] [--show 20]        # needs the vision extra
-uv run ebay-sniper report [--match 0.76 --colour -0.01]  # HTML page in data/, opens the browser
+uv run ebay-sniper report [--match 0.76 --colour -0.01 --web 0.01]  # HTML page in data/, opens the browser
 uv run ebay-sniper digest [--dry-run]                    # near misses to Telegram now
 uv run pytest
 uv run pytest -m vision      # loads the real image model
@@ -397,8 +410,8 @@ images per new listing.
 ## Open questions for the user
 
 - Is the silver case wanted whatever the dial brand (Futura, Limma, Moulin)?
-- Photo thresholds (0.70 / -0.03) are provisional: tighten them once a real
-  listing of the watch has been scored.
+- Photo thresholds (0.70 / -0.03 / 0.005) are provisional: tighten them once
+  a real listing of the watch has been scored.
 - `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
   higher hard cap) was proposed and not decided yet.
 - Which machine will run the bot, and at what poll interval (pending).

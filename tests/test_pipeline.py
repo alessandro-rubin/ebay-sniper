@@ -411,9 +411,15 @@ class FakeClassifier:
         return result
 
 
-def vision_score(match: float = 0.85, colour: float = 0.01) -> VisionScore:
+def vision_score(match: float = 0.85, colour: float = 0.01, web: float = 0.03) -> VisionScore:
     return VisionScore(
-        match=match, negative=0.7, colour=colour, best_photo=0, photos=1, model="test/model"
+        match=match,
+        negative=0.7,
+        colour=colour,
+        best_photo=0,
+        photos=1,
+        model="test/model",
+        web=web,
     )
 
 
@@ -459,18 +465,22 @@ def test_filter_keeps_listings_below_the_thresholds_out(
     classifier.scores[first_photo("81")] = vision_score(match=0.80, colour=0.01)
     classifier.scores[first_photo("82")] = vision_score(match=0.50, colour=0.01)
     classifier.scores[first_photo("83")] = vision_score(match=0.90, colour=-0.05)
-    filtering = with_vision(config, filter=True, match_threshold=0.7, colour_threshold=-0.02)
+    classifier.scores[first_photo("84")] = vision_score(match=0.90, web=-0.01)
+    filtering = with_vision(
+        config, filter=True, match_threshold=0.7, colour_threshold=-0.02, web_threshold=0.005
+    )
     cycle = vision_pipeline(filtering, searcher, store, notifier, classifier)
-    searcher.pages[(Q1, IT)] = make_page(make_item("81"), make_item("82"), make_item("83"))
+    searcher.pages[(Q1, IT)] = make_page(*(make_item(i) for i in ("81", "82", "83", "84")))
     report = cycle.run_cycle()
     assert notifier.ids == ["81"]
-    assert (report.scored, report.below_threshold) == (3, 2)
+    assert (report.scored, report.below_threshold) == (4, 3)
     assert store.status_of("82") is ListingStatus.BELOW_THRESHOLD
     assert store.status_of("83") is ListingStatus.BELOW_THRESHOLD
+    assert store.status_of("84") is ListingStatus.BELOW_THRESHOLD
     row = store._conn.execute(
         "SELECT below_threshold FROM runs ORDER BY run_id DESC LIMIT 1"
     ).fetchone()
-    assert row["below_threshold"] == 2
+    assert row["below_threshold"] == 3
 
 
 def test_listings_are_notified_when_their_photos_cannot_be_scored(
@@ -623,5 +633,5 @@ def test_format_digest_escapes_shortens_and_caps() -> None:
     assert "Spider &lt;web&gt; &amp; co" in text
     assert 'href="https://www.ebay.it/itm/0?a=1&amp;b=2"' in text
     assert "x..." in text
-    assert "(match 0.600, colour +0.010)" in text
+    assert "(match 0.600, colour +0.010, web +0.030)" in text
     assert text.endswith("... and 5 more (ebay-sniper report shows them all).")

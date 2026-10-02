@@ -271,7 +271,7 @@ def describe_vision(listing: Listing) -> str | None:
     score = listing.vision
     if score is None:
         return None
-    return f"Photos: match {score.match:.3f}, colour {score.colour:+.3f} ({score.photos} compared)"
+    return f"Photos: {score.describe()} ({score.photos} compared)"
 
 
 def format_total(listing: Listing, converter: CurrencyConverter | None) -> str | None:

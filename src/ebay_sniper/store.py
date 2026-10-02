@@ -110,6 +110,10 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE listings ADD COLUMN digested_at TEXT;
     CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     """,
+    # M3: spider-web dial probe (NULL for listings scored before it).
+    """
+    ALTER TABLE listings ADD COLUMN vision_web REAL;
+    """,
 )
 
 # SQLite limits the number of bound parameters per statement.
@@ -501,6 +505,7 @@ _VISION_COLUMNS = (
     "vision_best_photo",
     "vision_photos",
     "vision_model",
+    "vision_web",
     "vision_error",
 )
 _DATA_COLUMNS = (*_BASE_COLUMNS, *_VISION_COLUMNS)
@@ -540,7 +545,7 @@ def _listing_values(listing: Listing) -> tuple[object, ...]:
 
 def _vision_values(score: VisionScore | None) -> tuple[object, ...]:
     if score is None:
-        return (None,) * 6
+        return (None,) * 7
     return (
         score.match,
         score.negative,
@@ -548,6 +553,7 @@ def _vision_values(score: VisionScore | None) -> tuple[object, ...]:
         score.best_photo,
         score.photos,
         score.model,
+        score.web,
     )
 
 
@@ -561,6 +567,7 @@ def _vision_from_row(row: sqlite3.Row) -> VisionScore | None:
         best_photo=row["vision_best_photo"],
         photos=row["vision_photos"],
         model=row["vision_model"],
+        web=row["vision_web"],
     )
 
 

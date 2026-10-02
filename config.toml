@@ -113,6 +113,12 @@ max_photos = 8
 filter = true
 match_threshold = 0.70
 colour_threshold = -0.03
+# Added on 2026-10-02: other Futura watches pass match 0.70 (they reach 0.80)
+# but their dial scores -0.03..+0.02 here, the references +0.017..+0.066.
+# With it, 31 of the 667 stored listings pass instead of 93; calibrate
+# suggests 0.007. The weakest reference (watch small in a full-length photo)
+# scores +0.017.
+web_threshold = 0.005
 # Daily Telegram summary of the listings kept out by the thresholds (the
 # safety net against a wrong threshold), sent by the first cycle after this
 # hour in the [telegram] timezone. -1 turns it off.

@@ -509,6 +509,7 @@ class FakeScorer:
             ),
             negatives=(ReferenceImage(Path("gold.jpg"), [0.95, 0.0, -0.3]),),
             colour_axis=[0.0, 0.0, 1.0],
+            web_axis=[1.0, 0.0, 0.0],
         )
 
     def score(self, image_urls: Sequence[str]) -> VisionScore:
@@ -516,7 +517,13 @@ class FakeScorer:
             raise VisionError("no photos")
         match = 0.99 if "good" in image_urls[0] else 0.2
         return VisionScore(
-            match=match, negative=0.1, colour=0.15, best_photo=0, photos=1, model=self.model_id
+            match=match,
+            negative=0.1,
+            colour=0.15,
+            best_photo=0,
+            photos=1,
+            model=self.model_id,
+            web=match,
         )
 
 
@@ -543,12 +550,13 @@ def test_calibrate_suggests_thresholds_and_scores_stored_listings(
     assert run(config_path, "calibrate", "--show", "1") == 0
     out = capsys.readouterr().out
     # p1 . p2 = 1.0; thresholds 0.05 and 0.01 below the lowest positive.
-    assert "  pos   1.000    0.920   +0.100   p1.jpg: kept" in out
+    assert "  pos   1.000    0.920   +0.100  +1.000   p1.jpg: kept" in out
     assert "gold.jpg: filtered: photos not similar enough" in out
     assert "match_threshold = 0.95" in out
     assert "colour_threshold = 0.09" in out
+    assert "web_threshold = 0.97" in out
     assert "Stored listings: 2 scored, 0 failed; 1 would be notified" in out
-    assert "0.990 +0.150 PASS [seeded] Good one" in out
+    assert "0.990 +0.150 +0.990 PASS [seeded] Good one" in out
     assert "Other watch" not in out
     with Store.open(config_path.parent / "data" / "test.sqlite3") as store:
         stored = store.get("1")

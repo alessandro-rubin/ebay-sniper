@@ -4,15 +4,20 @@ Everything runs on this machine: no listing photo leaves it (see the hard
 constraints in CLAUDE.md). torch and open_clip are an optional extra
 (``uv sync --extra vision``) and are imported only when a model is loaded.
 
-Two signals, measured on the reference sets on 2026-10-01:
+Three signals, measured on the reference sets on 2026-10-01 and on the stored
+listings on 2026-10-02:
 
 - ``match``: the highest cosine similarity between any listing photo and any
-  positive reference. It tells this watch model from other watches well.
+  positive reference. It tells this watch model from unrelated objects, but
+  other watches of the brand score as high as some references.
 - ``colour``: the projection of the photo embedding on a silver-minus-gold
   direction built from text prompts. Image similarity alone ranks the
   gold-tone variant as high as the wanted silver-tone one (photos of the same
   model on a wrist are closer to each other than the case colours are), while
   this probe separates them.
+- ``web``: the projection on a spider-web-dial-minus-plain-dial direction,
+  built the same way. Other Futura watches score near zero, the references
+  and other spider web dials clearly above it.
 """
 
 from __future__ import annotations
@@ -51,9 +56,21 @@ COLOUR_PROMPTS: tuple[tuple[str, str], ...] = (
     ),
     ("a stainless steel watch", "a gold plated watch"),
 )
+# Spider-web dial versus plain dial descriptions, averaged the same way.
+WEB_PROMPTS: tuple[tuple[str, str], ...] = (
+    ("a watch with a spider web pattern on the dial", "a watch with a plain dial"),
+    ("a spider web watch dial", "a plain white watch dial"),
+    (
+        "a wristwatch with a black spider web printed on a white mother of pearl dial",
+        "a wristwatch with a plain dial and hour markers",
+    ),
+    ("a photo of a watch with a cobweb design and a spider", "a photo of an ordinary watch"),
+)
 # The colour of a listing is the most silver-looking of the photos closest to
 # the positives: recall comes first, a missed listing costs more than a
-# useless notification.
+# useless notification. The web score is taken over every photo instead: a
+# close-up of the dial is often not among the photos closest to the positives,
+# and only an actual web pattern raises it.
 COLOUR_TOP_PHOTOS = 3
 # Large photos are shrunk before preprocessing, which only needs a few hundred
 # pixels, to save memory and time.
@@ -63,6 +80,7 @@ MAX_DECODE_SIDE = 1024
 # listing costs more than a useless notification.
 MATCH_MARGIN = 0.05
 COLOUR_MARGIN = 0.01
+WEB_MARGIN = 0.01
 
 
 class VisionError(RuntimeError):
@@ -195,8 +213,10 @@ class ReferenceImage:
 class References:
     positives: tuple[ReferenceImage, ...]
     negatives: tuple[ReferenceImage, ...]
-    # Unit-free direction: silver-tone minus gold-tone.
+    # Unit-free directions: silver-tone minus gold-tone, spider-web dial minus
+    # plain dial.
     colour_axis: Vector
+    web_axis: Vector
 
 
 def reference_files(directory: Path) -> list[Path]:
@@ -209,17 +229,18 @@ def dot(a: Vector, b: Vector) -> float:
     return sum(x * y for x, y in zip(a, b, strict=True))
 
 
-def colour_axis(silver: Sequence[Vector], gold: Sequence[Vector]) -> list[float]:
-    """The mean of the silver-minus-gold differences of paired prompts."""
-    pairs = list(zip(silver, gold, strict=True))
-    return [sum(s[i] - g[i] for s, g in pairs) / len(pairs) for i in range(len(pairs[0][0]))]
+def prompt_axis(wanted: Sequence[Vector], unwanted: Sequence[Vector]) -> list[float]:
+    """The mean of the wanted-minus-unwanted differences of paired prompts."""
+    pairs = list(zip(wanted, unwanted, strict=True))
+    return [sum(w[i] - u[i] for w, u in pairs) / len(pairs) for i in range(len(pairs[0][0]))]
 
 
 def score_vectors(
     photos: Sequence[Vector],
     positives: Sequence[Vector],
     negatives: Sequence[Vector],
-    axis: Vector,
+    colour_axis: Vector,
+    web_axis: Vector,
     *,
     model_id: str,
 ) -> VisionScore:
@@ -233,7 +254,7 @@ def score_vectors(
         (dot(photo, ref) for photo in photos for ref in negatives), default=float("-inf")
     )
     ranked = sorted(range(len(photos)), key=lambda i: matches[i], reverse=True)
-    colours = [dot(photos[i], axis) for i in ranked[:COLOUR_TOP_PHOTOS]]
+    colours = [dot(photos[i], colour_axis) for i in ranked[:COLOUR_TOP_PHOTOS]]
     return VisionScore(
         match=matches[ranked[0]],
         negative=negative if negatives else 0.0,
@@ -241,6 +262,7 @@ def score_vectors(
         best_photo=ranked[0],
         photos=len(photos),
         model=model_id,
+        web=max(dot(photo, web_axis) for photo in photos),
     )
 
 
@@ -252,6 +274,9 @@ def below_threshold_reason(score: VisionScore, config: VisionConfig) -> str | No
         return f"photos not similar enough (match {score.match:.3f} < {config.match_threshold:.3f})"
     if score.colour < config.colour_threshold:
         return f"looks gold-tone (colour {score.colour:+.3f} < {config.colour_threshold:+.3f})"
+    # Scores stored before the web probe existed have no web value: not filtered.
+    if score.web is not None and score.web < config.web_threshold:
+        return f"no spider web dial (web {score.web:+.3f} < {config.web_threshold:+.3f})"
     return None
 
 
@@ -275,6 +300,7 @@ def score_references(refs: References, model_id: str) -> list[ReferenceScore]:
                 positives[:i] + positives[i + 1 :],
                 negatives,
                 refs.colour_axis,
+                refs.web_axis,
                 model_id=model_id,
             ),
         )
@@ -289,6 +315,7 @@ def score_references(refs: References, model_id: str) -> list[ReferenceScore]:
                 positives,
                 negatives[:i] + negatives[i + 1 :],
                 refs.colour_axis,
+                refs.web_axis,
                 model_id=model_id,
             ),
         )
@@ -297,14 +324,15 @@ def score_references(refs: References, model_id: str) -> list[ReferenceScore]:
     return results
 
 
-def suggest_thresholds(scores: Sequence[ReferenceScore]) -> tuple[float, float]:
-    """(match, colour) thresholds that keep every positive reference, with a margin."""
+def suggest_thresholds(scores: Sequence[ReferenceScore]) -> tuple[float, float, float]:
+    """(match, colour, web) thresholds that keep every positive reference, with a margin."""
     positives = [result.score for result in scores if result.positive]
     if not positives:
         raise VisionError("no positive reference images")
     return (
         round(min(score.match for score in positives) - MATCH_MARGIN, 3),
         round(min(score.colour for score in positives) - COLOUR_MARGIN, 3),
+        round(min(score.web for score in positives if score.web is not None) - WEB_MARGIN, 3),
     )
 
 
@@ -335,15 +363,17 @@ class VisionScorer:
             negatives = self._embed_files(reference_files(self._config.negative_dir))
             if not positives:
                 raise VisionError(f"no images in {self._config.positive_dir}")
-            texts = [text for pair in COLOUR_PROMPTS for text in pair]
+            texts = [text for pair in (*COLOUR_PROMPTS, *WEB_PROMPTS) for text in pair]
             vectors = self._embeddings.get_or_compute(
                 [text.encode() for text in texts],
                 lambda blobs: self._embedder.embed_texts([blob.decode() for blob in blobs]),
             )
+            colour, web = vectors[: 2 * len(COLOUR_PROMPTS)], vectors[2 * len(COLOUR_PROMPTS) :]
             self._references = References(
                 positives=positives,
                 negatives=negatives,
-                colour_axis=colour_axis(vectors[0::2], vectors[1::2]),
+                colour_axis=prompt_axis(colour[0::2], colour[1::2]),
+                web_axis=prompt_axis(web[0::2], web[1::2]),
             )
             log.info("Reference images: %d positive, %d negative", len(positives), len(negatives))
         return self._references
@@ -372,6 +402,7 @@ class VisionScorer:
             [ref.vector for ref in refs.positives],
             [ref.vector for ref in refs.negatives],
             refs.colour_axis,
+            refs.web_axis,
             model_id=self.model_id,
         )
 

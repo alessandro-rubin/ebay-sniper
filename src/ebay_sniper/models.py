@@ -80,6 +80,15 @@ class VisionScore:
     best_photo: int
     photos: int
     model: str
+    # Similarity to a spider-web dial description minus a plain-dial one, on
+    # the most web-looking photo: other watches of the brand stay near zero.
+    # None for listings scored before this probe existed (2026-10-02).
+    web: float | None = None
+
+    def describe(self) -> str:
+        """The scores as shown in notifications and command output."""
+        text = f"match {self.match:.3f}, colour {self.colour:+.3f}"
+        return text if self.web is None else f"{text}, web {self.web:+.3f}"
 
 
 @dataclass(frozen=True, slots=True)

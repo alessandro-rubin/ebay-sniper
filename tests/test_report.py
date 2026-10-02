@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ebay_sniper.cli import main
+from ebay_sniper.config import VisionConfig
 from ebay_sniper.models import Listing, VisionScore
 from ebay_sniper.pipeline import utc_now
 from ebay_sniper.report import render_report
@@ -28,7 +29,7 @@ def listings() -> list[Listing]:
 
     def score(match: float, best: int) -> VisionScore:
         return VisionScore(
-            match=match, negative=0.5, colour=0.02, best_photo=best, photos=2, model="m"
+            match=match, negative=0.5, colour=0.02, best_photo=best, photos=2, model="m", web=0.03
         )
 
     return [
@@ -40,7 +41,10 @@ def listings() -> list[Listing]:
 
 def test_report_ranks_by_match_and_marks_thresholds() -> None:
     rows = [(listing, ListingStatus.SEEDED) for listing in listings()]
-    page = render_report(rows, generated=NOW, thresholds=(0.8, 0.0))
+    thresholds = VisionConfig(
+        filter=True, match_threshold=0.8, colour_threshold=0.0, web_threshold=0.01
+    )
+    page = render_report(rows, generated=NOW, thresholds=thresholds)
     assert (
         page.index("High match")
         < page.index("Low &lt;b&gt;match&lt;/b&gt;")
@@ -48,11 +52,19 @@ def test_report_ranks_by_match_and_marks_thresholds() -> None:
     )
     assert "<b>match</b>" not in page
     assert "3 listings, 2 with photo scores" in page
-    assert "1 would be notified" in page
+    assert "web &ge; +0.010: 1 would be notified" in page
+    assert "<span>web +0.030</span>" in page
     assert page.count("would be notified</span>") == 1
     assert "not scored: no photo could be downloaded" in page
     # The best photo of the high match is its third one, shown as a thumbnail.
     assert 'src="https://i.ebayimg.com/images/g/22/s-l225.jpg" alt="" class=best' in page
+
+
+def test_report_applies_the_web_threshold() -> None:
+    rows = [(listing, ListingStatus.SEEDED) for listing in listings()]
+    thresholds = VisionConfig(filter=True, match_threshold=0.8, web_threshold=0.05)
+    page = render_report(rows, generated=NOW, thresholds=thresholds)
+    assert "0 would be notified" in page
 
 
 def test_report_without_thresholds_marks_nothing() -> None:
@@ -72,8 +84,21 @@ def test_report_command_writes_the_page(config_path: Path, capsys: pytest.Captur
         )
     out_file = config_path.parent / "page.html"
     code = main(
-        ["--config", str(config_path), "report", "--no-open", "-o", str(out_file), "--match", "0.7"]
+        [
+            "--config",
+            str(config_path),
+            "report",
+            "--no-open",
+            "-o",
+            str(out_file),
+            "--match",
+            "0.7",
+            "--web",
+            "0.02",
+        ]
     )
     assert code == 0
     assert "Wrote 3 listings" in capsys.readouterr().out
-    assert "match &ge; 0.700" in out_file.read_text(encoding="utf-8")
+    text = out_file.read_text(encoding="utf-8")
+    assert "match &ge; 0.700" in text
+    assert "web &ge; +0.020" in text

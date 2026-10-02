@@ -91,18 +91,20 @@ nothing. It works with a sandbox keyset too, for example
 **Photo comparison.** With `[vision] enabled = true` (and
 `uv sync --extra vision`), the photos of every new listing are compared with
 `reference_images/` by a local SigLIP model: nothing is sent to external
-services. The first use downloads the model (about 800 MB). Two scores appear
-in each notification: `match` (how close the best photo is to the wanted
-watch) and `colour` (silver-tone above zero, gold-tone below). With
-`filter = false` (shadow mode) they are only shown; with `filter = true`
-listings below `match_threshold` or `colour_threshold` are not notified but
-kept in the database. `calibrate` scores each reference image against the
-others, suggests thresholds that keep every positive, then scores the stored
-listings and prints the closest ones, so you can see what the thresholds would
-let through. It makes no Browse API call; photos and embeddings are cached in
-`data/image_cache`. `report` writes `data/report.html` with every stored listing,
-its photos and scores, ranked by `match`, and opens it in the browser; with
-`--match` and `--colour` it marks what those thresholds would let through.
+services. The first use downloads the model (about 800 MB). Three scores
+appear in each notification: `match` (how close the best photo is to the
+wanted watch), `colour` (silver-tone above zero, gold-tone below) and `web`
+(above zero the dial looks like a spider web; other watches of the brand stay
+near zero). With `filter = false` (shadow mode) they are only shown; with
+`filter = true` listings below `match_threshold`, `colour_threshold` or
+`web_threshold` are not notified but kept in the database. `calibrate` scores
+each reference image against the others, suggests thresholds that keep every
+positive, then scores the stored listings and prints the closest ones, so you
+can see what the thresholds would let through. It makes no Browse API call;
+photos and embeddings are cached in `data/image_cache`. `report` writes
+`data/report.html` with every stored listing, its photos and scores, ranked by
+`match`, and opens it in the browser; with `--match`, `--colour` and `--web`
+it marks what those thresholds would let through.
 
 **Near-miss digest.** With the filter on, the first cycle after
 `digest_hour` (20:00 by default) sends one Telegram message a day with the
