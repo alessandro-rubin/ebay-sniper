@@ -46,7 +46,9 @@ Vector = Sequence[float]
 
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 # Silver-tone versus gold-tone descriptions; their differences are averaged
-# into one direction in the embedding space.
+# into one direction in the embedding space. The direction is not normalized:
+# editing, adding or removing a prompt rescales the scores, so run `calibrate`
+# again and revisit the thresholds.
 COLOUR_PROMPTS: tuple[tuple[str, str], ...] = (
     ("a silver watch", "a gold watch"),
     ("a silver-tone metal watch case", "a gold-tone metal watch case"),
@@ -213,8 +215,8 @@ class ReferenceImage:
 class References:
     positives: tuple[ReferenceImage, ...]
     negatives: tuple[ReferenceImage, ...]
-    # Unit-free directions: silver-tone minus gold-tone, spider-web dial minus
-    # plain dial.
+    # Directions, not normalized: silver-tone minus gold-tone, spider-web dial
+    # minus plain dial.
     colour_axis: Vector
     web_axis: Vector
 

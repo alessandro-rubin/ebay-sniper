@@ -9,10 +9,12 @@ The purchase is always made manually in the eBay app: automated buying or
 bidding is prohibited by the eBay User Agreement without eBay's permission.
 See `CLAUDE.md` for design, constraints and milestones.
 
-Status: milestones M1 and M2 (search, deduplication, keyword/condition/price
-rules, item details, Telegram notifications) and the first part of M3 (photo
-comparison with a local model, in shadow mode, and `calibrate`). The other
-milestones are listed in `CLAUDE.md`.
+Status: milestones M1 to M3 are done (search, deduplication,
+keyword/condition/price rules, item details, Telegram notifications, photo
+filter with a local model, `calibrate`, `report` and the daily near-miss
+digest). The photo filter is on with provisional thresholds: no real listing
+of the watch has been scored yet. Next: Telegram buttons to label listings
+(M4) and deployment on an always-on machine (M5), see `CLAUDE.md`.
 
 ## Setup
 
@@ -28,8 +30,11 @@ milestones are listed in `CLAUDE.md`.
 3. **Secrets**: `cp .env.example .env` and fill in the values. Variables
    set in the environment take precedence over `.env`.
 4. **Configuration**: review `config.toml` (queries, marketplaces, price cap,
-   postal code).
-5. **Install**: `uv sync` (add `--extra vision` for the image filter).
+   postal code, photo thresholds) and the images in `reference_images/` (see
+   the README there).
+5. **Install**: `uv sync --extra vision`. The committed `config.toml` has the
+   photo filter on, which needs the extra; plain `uv sync` is enough with
+   `[vision] enabled = false`.
 6. **Check**: `uv run ebay-sniper check-config --live` validates the
    configuration, prints the daily API budget, requests an eBay token and
    checks the Telegram bot and chat (it sends nothing).
@@ -93,11 +98,14 @@ nothing. It works with a sandbox keyset too, for example
 `reference_images/` by a local SigLIP model: nothing is sent to external
 services. The first use downloads the model (about 800 MB). Three scores
 appear in each notification: `match` (how close the best photo is to the
-wanted watch), `colour` (silver-tone above zero, gold-tone below) and `web`
-(above zero the dial looks like a spider web; other watches of the brand stay
-near zero). With `filter = false` (shadow mode) they are only shown; with
+wanted watch), `colour` (higher for silver-tone, lower for gold-tone) and
+`web` (higher for a spider web dial; other watches of the brand stay near
+zero). The appendix at the end explains how they are computed. With
+`filter = false` (shadow mode) they are only shown; with
 `filter = true` listings below `match_threshold`, `colour_threshold` or
-`web_threshold` are not notified but kept in the database. `calibrate` scores
+`web_threshold` are not notified but kept in the database. The negative
+reference images filter nothing: `calibrate` and `report` show how close a
+photo comes to them, as a diagnostic. `calibrate` scores
 each reference image against the others, suggests thresholds that keep every
 positive, then scores the stored listings and prints the closest ones, so you
 can see what the thresholds would let through. It makes no Browse API call;
@@ -140,13 +148,71 @@ eBay credentials were rejected).
   the approximate `exchange_rates` of `config.toml`.
 - A listing dropped for its price is not evaluated again if the seller later
   lowers the price.
+- The photo thresholds were calibrated on curated reference images only: no
+  listing of the wanted watch was online while the filter was built, so how
+  it scores on real eBay photos is unknown. Lots and photos where the watch is
+  small are the expected weak spot; the near-miss digest is the safety net.
 
 ## Development
 
 ```bash
 uv run pytest
+uv run pytest -m vision      # loads the real image model (needs the vision extra)
 uv run ruff check . && uv run ruff format .
 ```
 
 Tests never touch the network: HTTP is mocked with `respx`. The fixtures in
 `tests/fixtures/` are currently synthetic (see the README there).
+
+## Appendix: how the photo scores work
+
+**Two towers.** SigLIP, like CLIP, is a dual-encoder ("two-tower") model: an
+image tower (a ViT-B/16) and a text tower (a transformer) map images and
+sentences into the same embedding space. The two were trained together on
+image-caption pairs so that an image lands close to its description, which
+makes an image comparable with a sentence by cosine similarity. Each tower
+encodes its input without looking at the other's, so every embedding is
+computed once and cached in `data/image_cache`. The text tower needs a
+SentencePiece tokenizer loaded through `transformers`, which is why that
+package is in the `vision` extra.
+
+**`match`** compares images with images: the highest cosine similarity between
+any listing photo and any positive reference. It recognises the watch model,
+but not the case colour or the dial: a whole-image embedding weighs the
+composition (hand, wrist, background) about as much as the colour, so the
+gold-tone variant on a wrist can score higher than the silver references, and
+the same case with a plain dial scores close to them.
+
+**`colour` and `web`** compare images with text. Each comes from four prompt
+pairs in `vision.py`: `COLOUR_PROMPTS` (silver-tone versus gold-tone) and
+`WEB_PROMPTS` (spider web dial versus plain dial). The text tower embeds the
+prompts (L2-normalized, like the photos), the axis is the mean of the pair
+differences, and the score of a photo is its dot product with the axis:
+
+```text
+axis  = mean_i( t_wanted[i] - t_unwanted[i] )
+score = dot(photo, axis)
+      = mean_i( cos(photo, t_wanted[i]) - cos(photo, t_unwanted[i]) )
+```
+
+A positive score means the photo is, on average, closer to the wanted
+descriptions than to the unwanted ones. The `colour` of a listing is the
+maximum over the three photos closest to the positives; its `web` is the
+maximum over all photos, because a close-up of the dial often ranks low on
+`match`. Taking the maximum favours recall: one good photo is enough.
+
+**Reading the numbers.**
+
+- The values are a few hundredths: image-text cosine similarities are small
+  in SigLIP, and the score is a difference of two of them.
+- Zero is not a natural boundary: the prompts carry their own bias (for
+  example "gold plated" versus "stainless steel"), so the thresholds come from
+  `calibrate` on the reference images, not from the sign.
+- The axis is not normalized: its length depends on how similar the two
+  prompts of each pair are. Changing, adding or removing a prompt rescales
+  every score, so after editing the prompts run `calibrate` again and revisit
+  the thresholds.
+- Text probes were the only option without labelled listing photos. Once the
+  Telegram feedback buttons (M4) have collected labels, a direction learned
+  from the photos themselves (difference of class means, or logistic
+  regression on the embeddings) should replace them.

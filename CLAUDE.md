@@ -85,7 +85,7 @@ One poll cycle:
 6. **Notify** via Telegram if the score is above threshold; persist everything,
    including items below threshold, so thresholds can be recalibrated.
 
-Modules (`src/ebay_sniper/`; M1, M2 and the first part of M3 are implemented):
+Modules (`src/ebay_sniper/`; M1 to M3 are implemented):
 
 | Module | Responsibility |
 | --- | --- |
@@ -291,6 +291,10 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
     filters Florence. Every photo, not the top 3 by `match`, because a
     close-up of the dial often ranks low on `match`. Listings scored before
     it have `web` NULL and are not filtered on it.
+  - Both directions are the mean of the prompt-pair differences and are not
+    normalized: editing, adding or removing a prompt rescales the scores, so
+    rerun `calibrate` and revisit the thresholds. The README appendix
+    explains the probes for readers.
 - On real traffic (619 stored listings, 2026-10-01): other Futura watches
   have a median `match` of 0.68 (max 0.80), other spider-themed listings
   0.61 (max 0.815, an Orient spider web dial). No listing of the target was
@@ -307,7 +311,8 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
 - Reference sets: `reference_images/positive/` (wanted variant, any angle) and
   `reference_images/negative/` (other colours, damaged pieces, similar but
   different watches). Cache the reference embeddings keyed by model name and
-  file hash.
+  file hash. The negatives filter nothing today (`calibrate` and `report`
+  show the similarity to the closest one as a diagnostic).
 - The eBay image URL size suffix (for example `s-l225`) can be replaced with a
   larger one (`s-l1600`) for better embeddings; fall back to the original URL.
 - Thresholds are **calibrated**, not guessed: `calibrate` scores every
