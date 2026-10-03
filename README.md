@@ -55,7 +55,9 @@ uv run ebay-sniper watch                  # poll forever at the configured inter
 
 Global options go before the command: `--config PATH` (default
 `config.toml`), `--env-file PATH` (default: `.env` next to the configuration
-file) and `-v` for debug logs. Logs go to stderr; secrets are redacted.
+file), `--log-file PATH` and `-v` for debug logs. Logs go to stderr, or only
+to the `--log-file` (UTF-8, rotated at 1 MB, three old files kept); secrets
+are redacted.
 
 **First run.** The first successful run of each (query, marketplace) pair
 records the listings that are already online without notifying them, and sends
@@ -124,18 +126,68 @@ only; `digest_hour = -1` turns it off.
 
 `run-once` is idempotent and refuses to start while another run is active, so
 it is safe to call from cron, a systemd timer or Windows Task Scheduler. Use
-absolute paths, since the scheduler's working directory is not the project:
+absolute paths, since the scheduler's working directory is not the project,
+and call the executable in `.venv` rather than `uv run`, which syncs the
+environment at every start. `--log-file` keeps the logs in a rotated file
+instead of stderr, which a scheduler would discard (Windows) or mail (cron).
+
+Keep the schedule consistent with `poll_interval_minutes`: `run-once` does not
+read it, but `check-config` computes the API budget from it. Relative paths
+inside `config.toml` (database, image cache, reference images) are resolved
+against the directory of `config.toml`. The exit code is 0 on success and 1
+when the cycle failed (for example every search failed or the eBay
+credentials were rejected). Do not schedule `watch`: it is the alternative to
+a scheduler, not a task for one.
+
+**cron** (every 20 minutes):
 
 ```cron
-*/20 * * * * /path/to/ebay-sniper/.venv/bin/ebay-sniper --config /path/to/ebay-sniper/config.toml run-once 2>> /path/to/ebay-sniper/data/ebay-sniper.log
+*/20 * * * * /path/to/ebay-sniper/.venv/bin/ebay-sniper --config /path/to/ebay-sniper/config.toml --log-file /path/to/ebay-sniper/data/ebay-sniper.log run-once
 ```
 
-Keep the schedule consistent with `poll_interval_minutes`: `check-config`
-computes the API budget from it. Relative paths inside `config.toml`
-(database, image cache, reference images) are resolved against the directory
-of `config.toml`. The exit code is 0 on
-success and 1 when the cycle failed (for example every search failed or the
-eBay credentials were rejected).
+**Windows Task Scheduler** (every hour). Register the task from an elevated
+PowerShell; `Register-ScheduledTask -Force` replaces an existing task with the
+same name:
+
+```powershell
+$root = 'C:\path\to\ebay-sniper'
+$action = New-ScheduledTaskAction -Execute "$root\.venv\Scripts\ebay-sniper.exe" `
+    -Argument "--config `"$root\config.toml`" --log-file `"$root\data\ebay-sniper.log`" run-once" `
+    -WorkingDirectory $root
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 60)
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U
+Register-ScheduledTask -TaskName ebay-sniper -Action $action -Trigger $trigger `
+    -Settings $settings -Principal $principal -Force
+```
+
+- `S4U` ("run whether user is logged on or not", without storing the
+  password) runs the task in the background, with no console window popping
+  up, also when nobody is logged on. It cannot use network shares, which the
+  bot does not need, and registering it requires an elevated prompt.
+- Without `-RepetitionDuration` the trigger repeats indefinitely.
+  `-StartWhenAvailable` runs one missed cycle after a shutdown or sleep, but a
+  sleeping PC does not poll: disable sleep while plugged in, or move the bot
+  to an always-on machine.
+- The task is listed in `taskschd.msc` (Task Scheduler Library), with its
+  last run time and result.
+
+```powershell
+Start-ScheduledTask -TaskName ebay-sniper       # run a cycle now
+Get-ScheduledTaskInfo -TaskName ebay-sniper     # LastTaskResult: 0 ok, 1 failed, 267009 running
+Get-Content C:\path\to\ebay-sniper\data\ebay-sniper.log -Tail 30 -Wait
+# Another interval (update poll_interval_minutes too):
+Set-ScheduledTask -TaskName ebay-sniper -Trigger (New-ScheduledTaskTrigger -Once `
+    -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 30))
+Disable-ScheduledTask -TaskName ebay-sniper     # pause; Enable-ScheduledTask resumes
+Unregister-ScheduledTask -TaskName ebay-sniper -Confirm:$false
+```
+
+A failing task (for example expired eBay keys) is not reported on Telegram
+yet: check the log or `LastTaskResult` now and then.
 
 ## Known limitations
 

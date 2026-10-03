@@ -132,7 +132,7 @@ max_photos = 4
 timezone = "Europe/Rome"
 
 [runtime]
-poll_interval_minutes = 20
+poll_interval_minutes = 60
 # Relative paths are resolved against the directory of this file.
 database_path = "data/ebay_sniper.sqlite3"
 image_cache_dir = "data/image_cache"

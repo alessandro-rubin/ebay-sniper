@@ -16,7 +16,7 @@ import pytest
 import respx
 
 from ebay_sniper.cli import build_parser, main
-from ebay_sniper.logsetup import RedactingFormatter, register_secrets
+from ebay_sniper.logsetup import RedactingFormatter, configure_logging, register_secrets
 from ebay_sniper.models import Listing, VisionScore
 from ebay_sniper.pipeline import utc_now
 from ebay_sniper.store import ListingStatus, Store
@@ -59,6 +59,9 @@ def _restore_root_logger() -> Iterator[None]:
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
     yield
+    for handler in root.handlers:
+        if handler not in handlers:
+            handler.close()
     root.handlers[:] = handlers
     root.setLevel(level)
 
@@ -224,6 +227,28 @@ def test_invalid_configuration_is_reported(tmp_path: Path, capsys: pytest.Captur
     config_path.write_text(CONFIG_TOML.replace('"EBAY_DE"', '"EBAY_UK"'), encoding="utf-8")
     assert run(config_path, "check-config") == 1
     assert "Configuration error" in capsys.readouterr().err
+
+
+def test_log_file_replaces_stderr(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(CONFIG_TOML.replace('"EBAY_DE"', '"EBAY_UK"'), encoding="utf-8")
+    log_file = tmp_path / "logs" / "ebay-sniper.log"
+    assert main(["--config", str(config_path), "--log-file", str(log_file), "check-config"]) == 1
+    assert "Configuration error" in log_file.read_text(encoding="utf-8")
+    # Only the file: cron would mail every line written to stderr.
+    assert capsys.readouterr().err == ""
+
+
+def test_log_file_is_utf8_and_redacted(tmp_path: Path) -> None:
+    log_file = tmp_path / "ebay-sniper.log"
+    title = "Montre \U0001f577 araign\u00e9e"
+    register_secrets(TELEGRAM_BOT_TOKEN)
+    configure_logging(log_file=log_file)
+    logging.getLogger("ebay_sniper.test").error("Failed %s for %r", TELEGRAM_BOT_TOKEN, title)
+    text = log_file.read_text(encoding="utf-8")
+    # Unlike redirected stderr on Windows, nothing is escaped.
+    assert f"Failed [REDACTED] for '{title}'" in text
+    assert TELEGRAM_BOT_TOKEN not in text
 
 
 def test_run_once_end_to_end(

@@ -15,7 +15,7 @@
 - ``digest``: send the near misses (below the photo thresholds) to Telegram
   now; the cycle also sends them once a day.
 
-Results meant for the user go to stdout, logs go to stderr.
+Results meant for the user go to stdout, logs go to stderr (or to ``--log-file``).
 """
 
 from __future__ import annotations
@@ -96,6 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="secrets file (default: .env next to the configuration file); "
         "environment variables take precedence",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="write logs to this file instead of stderr, rotated at 1 MB with three "
+        "old files kept (for a scheduler)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -227,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     tolerate_unencodable_output()
-    configure_logging(verbose=args.verbose)
+    configure_logging(verbose=args.verbose, log_file=args.log_file)
     handler: Handler = args.handler
     try:
         return handler(args)

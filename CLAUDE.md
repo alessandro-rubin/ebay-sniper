@@ -103,7 +103,7 @@ Modules (`src/ebay_sniper/`; M1 to M3 are implemented):
 | `notify/telegram.py` | Bot API via httpx: photo with caption or silent album plus details message, URL button, fallback to text |
 | `pipeline.py` | One poll cycle wiring the steps above |
 | `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
-| `logsetup.py` | Logging to stderr with redaction of registered secrets (tracebacks included) |
+| `logsetup.py` | Logging to stderr, or only to a size-rotated UTF-8 file with `--log-file` (for schedulers), with redaction of registered secrets (tracebacks included) |
 | `retry.py` | Backoff with jitter and `Retry-After` parsing |
 | `report.py` | Local HTML page of the stored listings with photos (loaded from eBay by the browser) and scores; never published |
 | `cli.py` | `run-once`, `watch`, `check-config [--live]`, `search`, `notify-test`, `calibrate`, `report`, `digest` |
@@ -419,7 +419,10 @@ images per new listing.
   a real listing of the watch has been scored.
 - `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
   higher hard cap) was proposed and not decided yet.
-- Which machine will run the bot, and at what poll interval (pending).
+- Which always-on machine will run the bot (M5). Since 2026-10-03 it runs
+  hourly (`poll_interval_minutes = 60`) on the user's Windows PC through
+  Task Scheduler (S4U task, see the README section Scheduling); a sleeping
+  PC does not poll.
 - The keyword lists in `config.toml` are a first multilingual draft: review
   them, especially the drop list (a wrong drop can cost the item).
 - `buyer_postal_code` is committed with `config.toml`: a generic postal code
