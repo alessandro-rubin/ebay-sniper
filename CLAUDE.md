@@ -95,13 +95,13 @@ Modules (`src/ebay_sniper/`; M1 to M3 are implemented):
 | `ebay/models.py` | Pydantic models for the Browse API fields used (no `seller`) |
 | `ebay/browse.py` | `search`, `search_raw` (sanitized, for fixtures) and `get_item`; retries with backoff on 429/5xx |
 | `models.py` | Domain objects: `Money`, `CurrencyConverter`, `Verdict`, `Listing` (built from an `ItemSummary`, merged with `getItem`, `total` = item or current bid + shipping + import charges) |
-| `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings with details, verdict and notification state, established searches, runs with API usage |
+| `store.py` | SQLite (stdlib `sqlite3`, migrations via `PRAGMA user_version`): listings with details, verdict and notification state, established searches, runs with API usage and outcome, `state` key-value table |
 | `rules.py` | Keyword/condition/price rules returning `drop` / `flag` / `pass` with reasons |
 | `images.py` | eBay image URL sizes; photo download cache on disk (by size and URL, pruned after `image_cache_days`) |
 | `vision.py` | open_clip embedder loaded on first use (torch imported lazily), embedding cache on disk (model + content hash), reference sets, `match`, `colour` and `web` scores, thresholds, leave-one-out calibration |
 | `notify/base.py` | `Notifier` protocol and `NotificationError`, so the pipeline does not depend on Telegram |
 | `notify/telegram.py` | Bot API via httpx: photo with caption or silent album plus details message, URL button, fallback to text |
-| `pipeline.py` | One poll cycle wiring the steps above |
+| `pipeline.py` | One poll cycle wiring the steps above; health checks after every cycle (failure alert, recovery message, daily heartbeat) |
 | `app.py` | Composition root: HTTP clients, store and pipeline with their lifetimes |
 | `logsetup.py` | Logging to stderr, or only to a size-rotated UTF-8 file with `--log-file` (for schedulers), with redaction of registered secrets (tracebacks included) |
 | `retry.py` | Backoff with jitter and `Retry-After` parsing |
@@ -139,6 +139,18 @@ Behaviour implemented in M1 and M2 worth knowing before changing it:
   listed in one message. Two consecutive failures end the notification phase.
 - **Overlapping runs**: `runs` rows act as a lock; a `running` row younger than
   30 minutes makes a new cycle skip.
+- **Health** (2026-10-03): after every cycle, failed ones included,
+  `Pipeline._health_phase` reads the `runs` table. `failed` and `abandoned`
+  runs count as failures. When the latest `runtime.failure_alert_after`
+  (default 2) finished runs all failed, one alert is sent and the start of the
+  streak is stored in `state` (`failing_since`); the first non-failed run
+  after it sends a recovery message and clears it. A message that cannot be
+  sent is retried by the next cycle. The first cycle after
+  `runtime.heartbeat_hour` (default 9) sends the status of the last 24 hours,
+  with a warning below 75% of the expected cycles. Run errors are passed
+  through `logsetup.redact` and HTML-escaped before reaching Telegram. The
+  test configuration sets `heartbeat_hour = -1` because it depends on the
+  wall clock; tests that need it pass a `Clock`.
 - **Secrets**: the Telegram token is in every Bot API URL. `TelegramClient`
   never includes httpx exception texts in its errors, httpx loggers are set to
   WARNING, and `logsetup` redacts registered secrets in every record.
@@ -362,8 +374,9 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   recalibrate and tighten.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
-  Windows Task Scheduler), daily heartbeat and alert after repeated failures
-  (expired keys, API errors).
+  Windows Task Scheduler). Done on 2026-10-03: Windows Task Scheduler on the
+  user's PC with `--log-file`, daily heartbeat, alert after repeated failures
+  and recovery message.
 
 ## Commands
 

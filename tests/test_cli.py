@@ -107,6 +107,8 @@ def test_check_config(config_path: Path, env_path: Path, capsys: pytest.CaptureF
     assert "   22  futura (spider, ragno)" in out
     assert "288 search + 720 item details = 1008" in out
     assert "Budget: OK, 1008 of 3000 allowed (60% of the 5000 daily limit)" in out
+    assert "Heartbeat: off" in out
+    assert "Failure alert: after 2 consecutive failed cycles" in out
     assert "test.sqlite3 (not created yet)" in out
     assert "Secrets: all present" in out
 

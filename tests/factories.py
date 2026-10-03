@@ -69,6 +69,8 @@ image_cache_dir = "data/image_cache"
 api_budget_share = 0.6
 max_notifications_per_cycle = 10
 seed_new_searches = true
+# Off: it depends on the time of day; the tests that need it set a clock.
+heartbeat_hour = -1
 """
 
 

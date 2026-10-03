@@ -265,6 +265,13 @@ class RuntimeConfig(_Section):
     # results already online, without notifying them. Later cycles notify what
     # is really new. This also applies when a query or marketplace is added.
     seed_new_searches: bool = True
+    # Daily Telegram status of the last 24 hours (cycles, failures, API calls),
+    # sent by the first cycle after this hour ([telegram] timezone). Its absence
+    # is the only sign of a bot that cannot start at all. -1 turns it off.
+    heartbeat_hour: int = Field(default=9, ge=-1, le=23)
+    # Telegram alert after this many consecutive failed cycles, and a message
+    # when cycles work again. 0 turns it off.
+    failure_alert_after: int = Field(default=2, ge=0)
 
 
 class AppConfig(_Section):

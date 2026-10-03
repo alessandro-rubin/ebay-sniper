@@ -148,6 +148,14 @@ max_notifications_per_cycle = 10
 # marketplaces within budget, and less than one new listing per cycle was
 # measured on 2026-10-01.
 max_details_per_cycle = 4
+# Daily Telegram status of the last 24 hours (cycles ok and failed, API calls,
+# new listings, cycles missing because the computer was off), sent by the first
+# cycle after this hour in the [telegram] timezone. If it does not arrive, the
+# bot is not running at all. -1 turns it off.
+heartbeat_hour = 9
+# Telegram alert after this many consecutive failed cycles (eBay keys rejected,
+# every search failing), and a message when cycles work again. 0 turns it off.
+failure_alert_after = 2
 # The first successful run of each (query, marketplace) pair records what is
 # already online without notifying it; later runs notify only new listings.
 # Adding a query or a marketplace seeds it the same way.

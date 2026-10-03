@@ -27,10 +27,14 @@ _secrets: set[str] = set()
 
 class RedactingFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        text = super().format(record)
-        for secret in _secrets:
-            text = text.replace(secret, _REDACTED)
-        return text
+        return redact(super().format(record))
+
+
+def redact(text: str) -> str:
+    """Replace every registered secret in ``text``."""
+    for secret in _secrets:
+        text = text.replace(secret, _REDACTED)
+    return text
 
 
 def register_secrets(*values: str) -> None:

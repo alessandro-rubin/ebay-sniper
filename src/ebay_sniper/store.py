@@ -7,6 +7,8 @@ Tables:
 - ``searches``: (query, marketplace) pairs that completed at least once. The
   first completion of a pair seeds the listings that were already online.
 - ``runs``: one row per poll cycle, with Browse API usage and outcome.
+- ``state``: small key-value records (dates of the daily messages, failure
+  streak already alerted).
 
 The schema version lives in ``PRAGMA user_version``; pending migrations are
 applied in order when the database is opened.
@@ -18,6 +20,7 @@ import json
 import sqlite3
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -145,6 +148,20 @@ class RunStatus(StrEnum):
     FAILED = "failed"
     # Found still running long after it started (killed process).
     ABANDONED = "abandoned"
+
+
+@dataclass(frozen=True, slots=True)
+class RunRecord:
+    """A finished (or abandoned) poll cycle."""
+
+    started_at: datetime
+    status: RunStatus
+    api_calls: int
+    new_listings: int
+    notified: int
+    dropped: int
+    below_threshold: int
+    error: str | None
 
 
 class Store:
@@ -275,6 +292,22 @@ class Store:
                 run_id,
             ),
         )
+
+    def recent_runs(self, limit: int) -> list[RunRecord]:
+        """The latest runs that are no longer running, newest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM runs WHERE status != ? ORDER BY run_id DESC LIMIT ?",
+            (RunStatus.RUNNING, limit),
+        )
+        return [_run_from_row(row) for row in rows]
+
+    def runs_since(self, since: datetime) -> list[RunRecord]:
+        """The runs started at or after ``since`` that are no longer running, newest first."""
+        rows = self._conn.execute(
+            "SELECT * FROM runs WHERE status != ? AND started_at >= ? ORDER BY run_id DESC",
+            (RunStatus.RUNNING, _to_iso(since)),
+        )
+        return [_run_from_row(row) for row in rows]
 
     def api_calls_since(self, since: datetime) -> int:
         row = self._conn.execute(
@@ -444,6 +477,9 @@ class Store:
             (key, value),
         )
 
+    def delete_state(self, key: str) -> None:
+        self._conn.execute("DELETE FROM state WHERE key = ?", (key,))
+
     def recent_with_photos(self, limit: int) -> list[tuple[Listing, ListingStatus]]:
         """The most recently seen listings that have photos, with their status."""
         rows = self._conn.execute(
@@ -600,6 +636,19 @@ def _listing_from_row(row: sqlite3.Row) -> Listing:
         reasons=tuple(json.loads(row["reasons"])),
         vision=_vision_from_row(row),
         vision_error=row["vision_error"],
+    )
+
+
+def _run_from_row(row: sqlite3.Row) -> RunRecord:
+    return RunRecord(
+        started_at=_from_iso(row["started_at"]),
+        status=RunStatus(row["status"]),
+        api_calls=row["api_calls"],
+        new_listings=row["new_listings"],
+        notified=row["notified"],
+        dropped=row["dropped"],
+        below_threshold=row["below_threshold"],
+        error=row["error"],
     )
 
 

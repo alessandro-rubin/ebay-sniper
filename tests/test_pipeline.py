@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from ebay_sniper.config import AppConfig
 from ebay_sniper.ebay.browse import EbayApiError
 from ebay_sniper.ebay.models import ItemDetails, ItemSummary, SearchPage
+from ebay_sniper.logsetup import register_secrets
 from ebay_sniper.models import Listing, Verdict, VisionScore
 from ebay_sniper.notify.base import NotificationError
-from ebay_sniper.pipeline import CycleError, Pipeline, format_digest
-from ebay_sniper.store import ListingStatus, RunStatus, Store
+from ebay_sniper.pipeline import CycleError, Pipeline, format_digest, format_heartbeat
+from ebay_sniper.store import ListingStatus, RunRecord, RunStatus, Store
 from ebay_sniper.vision import VisionError
-from factories import make_item, make_page
+from factories import TELEGRAM_BOT_TOKEN, make_item, make_page
 
 Q1 = "futura (spider, ragno)"
 Q2 = "(spider, spiderweb) watch"
@@ -635,3 +637,131 @@ def test_format_digest_escapes_shortens_and_caps() -> None:
     assert "x..." in text
     assert "(match 0.600, colour +0.010, web +0.030)" in text
     assert text.endswith("... and 5 more (ebay-sniper report shows them all).")
+
+
+def fail_all_searches(searcher: FakeSearcher) -> None:
+    for query in (Q1, Q2):
+        for marketplace in (IT, DE):
+            searcher.pages[(query, marketplace)] = EbayApiError("search", "HTTP 503")
+
+
+def failing_cycle(cycle: Pipeline) -> None:
+    with pytest.raises(CycleError):
+        cycle.run_cycle()
+
+
+def test_repeated_failures_alert_once_and_the_recovery_is_reported(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    cycle = pipeline(config, searcher, store, notifier)
+    cycle.run_cycle()
+    notifier.texts.clear()
+    fail_all_searches(searcher)
+    failing_cycle(cycle)
+    assert notifier.texts == []  # one failed cycle can be a hiccup
+    failing_cycle(cycle)
+    assert len(notifier.texts) == 1
+    assert notifier.texts[0].startswith("Alert: the last 2 cycles failed, since ")
+    assert "Last error: CycleError: all 4 searches failed" in notifier.texts[0]
+    failing_cycle(cycle)
+    assert len(notifier.texts) == 1  # once per streak
+    searcher.pages.clear()
+    cycle.run_cycle()
+    assert len(notifier.texts) == 2
+    assert notifier.texts[1].startswith("Cycles work again after 3 failed cycle(s) since ")
+    cycle.run_cycle()
+    assert len(notifier.texts) == 2
+
+
+def test_an_alert_that_cannot_be_sent_is_tried_again(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    cycle = pipeline(config, searcher, store, notifier)
+    fail_all_searches(searcher)
+    notifier.failing = True
+    failing_cycle(cycle)
+    failing_cycle(cycle)
+    notifier.failing = False
+    failing_cycle(cycle)
+    assert len(notifier.texts) == 1
+    assert notifier.texts[0].startswith("Alert: the last 3 cycles failed")
+
+
+def test_failure_alert_can_be_turned_off(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    cycle = pipeline(with_runtime(config, failure_alert_after=0), searcher, store, notifier)
+    fail_all_searches(searcher)
+    for _ in range(3):
+        failing_cycle(cycle)
+    assert notifier.texts == []
+
+
+def test_daily_heartbeat(
+    config: AppConfig, searcher: FakeSearcher, store: Store, notifier: FakeNotifier
+) -> None:
+    # 06:30 UTC is 08:30 in Rome (summer time): too early for the heartbeat.
+    clock = Clock(datetime(2026, 9, 28, 6, 30, tzinfo=UTC))
+    cycle = Pipeline(with_runtime(config, heartbeat_hour=9), searcher, store, notifier, clock=clock)
+    cycle.run_cycle()
+    notifier.texts.clear()
+    clock.now = datetime(2026, 9, 28, 7, 30, tzinfo=UTC)
+    fail_all_searches(searcher)
+    failing_cycle(cycle)  # sent after failed cycles too
+    assert len(notifier.texts) == 1
+    heartbeat = notifier.texts[0]
+    assert heartbeat.startswith(
+        "Daily status, last 24 hours: 2 cycle(s) (1 ok, 0 partial, 1 failed), "
+        "8 Browse API calls, 0 new listing(s)"
+    )
+    assert "Only 2 of the 72 expected cycles ran" in heartbeat
+    assert "Last error (2026-09-28 09:30): CycleError: all 4 searches failed" in heartbeat
+    # Once a day.
+    searcher.pages.clear()
+    clock.now = datetime(2026, 9, 28, 20, 0, tzinfo=UTC)
+    cycle.run_cycle()
+    assert len(notifier.texts) == 1
+    clock.now = datetime(2026, 9, 29, 7, 0, tzinfo=UTC)
+    cycle.run_cycle()
+    assert len(notifier.texts) == 2
+    # The first cycle of the 28th is more than 24 hours old.
+    assert "3 cycle(s) (2 ok, 0 partial, 1 failed)" in notifier.texts[1]
+
+
+def run_record(status: RunStatus, error: str | None = None) -> RunRecord:
+    return RunRecord(
+        started_at=datetime(2026, 9, 28, 10, 0, tzinfo=UTC),
+        status=status,
+        api_calls=10,
+        new_listings=3,
+        notified=1,
+        dropped=1,
+        below_threshold=1,
+        error=error,
+    )
+
+
+def test_format_heartbeat_counts_and_describes_the_last_error() -> None:
+    register_secrets(TELEGRAM_BOT_TOKEN)
+    runs = [
+        run_record(RunStatus.ABANDONED),
+        run_record(RunStatus.FAILED, f"ConnectError: <bot{TELEGRAM_BOT_TOKEN}> " + "x" * 400),
+        run_record(RunStatus.PARTIAL),
+        run_record(RunStatus.OK),
+    ]
+    text = format_heartbeat(runs, expected=4, timezone=ZoneInfo("Europe/Rome"))
+    assert text.startswith(
+        "Daily status, last 24 hours: 4 cycle(s) (1 ok, 1 partial, 2 failed), "
+        "40 Browse API calls, 12 new listing(s): 4 notified, 4 dropped by the rules, "
+        "4 below the photo thresholds."
+    )
+    assert "expected" not in text
+    assert text.endswith(
+        "Last error (2026-09-28 12:00): interrupted before the end of the cycle "
+        "(process killed or timed out)"
+    )
+    error = format_heartbeat(runs[1:], expected=5, timezone=ZoneInfo("Europe/Rome"))
+    assert "Only 3 of the 5 expected cycles ran" in error
+    assert "ConnectError: &lt;bot[REDACTED]&gt; xxx" in error
+    assert TELEGRAM_BOT_TOKEN not in error
+    assert error.endswith("x...")

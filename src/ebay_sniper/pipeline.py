@@ -3,6 +3,10 @@
 The cycle is idempotent: listings are keyed by their legacy item id, so running
 it twice in a row notifies nothing new the second time. A notification that
 fails stays pending and is retried in the next cycle.
+
+After every cycle, failed ones included, the health checks run: an alert after
+repeated failed cycles, a message when cycles work again, and a daily
+heartbeat with the outcome of the last 24 hours.
 """
 
 from __future__ import annotations
@@ -12,16 +16,18 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import takewhile
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from ebay_sniper.config import AppConfig
+from ebay_sniper.config import AppConfig, compute_budget
 from ebay_sniper.ebay.browse import EbayApiError
 from ebay_sniper.ebay.models import ItemDetails, SearchPage
+from ebay_sniper.logsetup import redact
 from ebay_sniper.models import Listing, Verdict, VisionScore
 from ebay_sniper.notify.base import NotificationError, Notifier
 from ebay_sniper.rules import RuleEngine
-from ebay_sniper.store import ListingStatus, RunStatus, Store
+from ebay_sniper.store import ListingStatus, RunRecord, RunStatus, Store
 from ebay_sniper.vision import VisionError, below_threshold_reason
 
 log = logging.getLogger(__name__)
@@ -40,6 +46,20 @@ MAX_DIGEST_ENTRIES = 20
 MAX_DIGEST_TITLE = 80
 # Local date of the last digest, in the store's state table.
 DIGEST_STATE_KEY = "last_digest_date"
+# Local date of the last heartbeat, in the store's state table.
+HEARTBEAT_STATE_KEY = "last_heartbeat_date"
+# Start of the failure streak already alerted, in the store's state table;
+# removed once the recovery has been reported.
+FAILING_SINCE_STATE_KEY = "failing_since"
+# Runs read to measure the current failure streak.
+MAX_STREAK_RUNS = 500
+# The heartbeat points out a day with fewer cycles than this share of the
+# expected ones (computer asleep or off, task disabled).
+MIN_CYCLE_SHARE = 0.75
+# Characters of a run error quoted in a Telegram message.
+MAX_ERROR_LENGTH = 300
+# An abandoned run was found still running long after it started: killed or hung.
+FAILED_RUNS = frozenset({RunStatus.FAILED, RunStatus.ABANDONED})
 
 
 class Searcher(Protocol):
@@ -168,6 +188,7 @@ class Pipeline:
                 below_threshold=report.below_threshold,
                 error=error,
             )
+            self._health_phase()
         log.info("Cycle done: %s", report.summary())
         return report
 
@@ -383,23 +404,71 @@ class Pipeline:
 
     def _digest_phase(self) -> None:
         """Once a day, after ``vision.digest_hour``, summarise the near misses."""
-        hour = self._config.vision.digest_hour
-        if self._classifier is None or hour < 0:
+        if self._classifier is None:
             return
-        local = self._clock().astimezone(ZoneInfo(self._config.telegram.timezone))
-        today = local.date().isoformat()
-        if local.hour < hour or self._store.get_state(DIGEST_STATE_KEY) == today:
-            return
+        today = self._daily_message_due(self._config.vision.digest_hour, DIGEST_STATE_KEY)
         # On failure the date is not recorded: the next cycle tries again.
-        if send_digest(self._store, self._notifier, self._clock()):
+        if today is not None and send_digest(self._store, self._notifier, self._clock()):
             self._store.set_state(DIGEST_STATE_KEY, today)
 
-    def _send_text(self, text: str) -> None:
-        """Best-effort service message: a failure is logged, not raised."""
+    def _health_phase(self) -> None:
+        """Failure alert, recovery message and daily heartbeat, after every cycle."""
+        self._check_failures()
+        today = self._daily_message_due(self._config.runtime.heartbeat_hour, HEARTBEAT_STATE_KEY)
+        if today is None:
+            return
+        runs = self._store.runs_since(self._clock() - timedelta(days=1))
+        expected = compute_budget(self._config).cycles_per_day
+        if self._send_text(format_heartbeat(runs, expected=expected, timezone=self._timezone)):
+            self._store.set_state(HEARTBEAT_STATE_KEY, today)
+
+    def _check_failures(self) -> None:
+        """Alert once per failure streak, then report when cycles work again.
+
+        A message that cannot be sent is tried again after the next cycle.
+        """
+        after = self._config.runtime.failure_alert_after
+        if after == 0:
+            return
+        recent = self._store.recent_runs(MAX_STREAK_RUNS)
+        streak = list(takewhile(lambda run: run.status in FAILED_RUNS, recent))
+        failing_since = self._store.get_state(FAILING_SINCE_STATE_KEY)
+        if failing_since is None and len(streak) >= after:
+            text = format_failure_alert(streak, timezone=self._timezone)
+            if self._send_text(text):
+                self._store.set_state(FAILING_SINCE_STATE_KEY, streak[-1].started_at.isoformat())
+        elif failing_since is not None and not streak:
+            since = datetime.fromisoformat(failing_since)
+            failed = [run for run in self._store.runs_since(since) if run.status in FAILED_RUNS]
+            text = (
+                f"Cycles work again after {len(failed)} failed cycle(s) since "
+                f"{_local_time(since, self._timezone)}."
+            )
+            if self._send_text(text):
+                self._store.delete_state(FAILING_SINCE_STATE_KEY)
+
+    def _daily_message_due(self, hour: int, state_key: str) -> str | None:
+        """The local date if a daily message sent after ``hour`` is due today, else None."""
+        if hour < 0:
+            return None
+        local = self._clock().astimezone(self._timezone)
+        today = local.date().isoformat()
+        if local.hour < hour or self._store.get_state(state_key) == today:
+            return None
+        return today
+
+    @property
+    def _timezone(self) -> ZoneInfo:
+        return ZoneInfo(self._config.telegram.timezone)
+
+    def _send_text(self, text: str) -> bool:
+        """Best-effort service message: a failure is logged, not raised. True if sent."""
         try:
             self._notifier.send_text(text)
         except NotificationError as exc:
             log.error("Could not send a service message: %s", exc)
+            return False
+        return True
 
 
 def _newest_first(listing: Listing) -> float:
@@ -448,6 +517,56 @@ def format_digest(listings: Sequence[Listing]) -> str:
             "(ebay-sniper report shows them all)."
         )
     return "\n".join(lines)
+
+
+def format_heartbeat(runs: Sequence[RunRecord], *, expected: int, timezone: ZoneInfo) -> str:
+    """The outcome of the runs of the last 24 hours (newest first) as Telegram HTML."""
+    failed = [run for run in runs if run.status in FAILED_RUNS]
+    partial = sum(run.status is RunStatus.PARTIAL for run in runs)
+    ok = len(runs) - len(failed) - partial
+    lines = [
+        f"Daily status, last 24 hours: {len(runs)} cycle(s) ({ok} ok, {partial} partial, "
+        f"{len(failed)} failed), {sum(run.api_calls for run in runs)} Browse API calls, "
+        f"{sum(run.new_listings for run in runs)} new listing(s): "
+        f"{sum(run.notified for run in runs)} notified, "
+        f"{sum(run.dropped for run in runs)} dropped by the rules, "
+        f"{sum(run.below_threshold for run in runs)} below the photo thresholds."
+    ]
+    if len(runs) < expected * MIN_CYCLE_SHARE:
+        lines.append(
+            f"Only {len(runs)} of the {expected} expected cycles ran: "
+            "was the computer asleep or off?"
+        )
+    if failed:
+        last = failed[0]
+        lines.append(
+            f"Last error ({_local_time(last.started_at, timezone)}): {_describe_error(last)}"
+        )
+    return "\n".join(lines)
+
+
+def format_failure_alert(streak: Sequence[RunRecord], *, timezone: ZoneInfo) -> str:
+    """The consecutive failed runs (newest first) as Telegram HTML."""
+    return (
+        f"Alert: the last {len(streak)} cycles failed, since "
+        f"{_local_time(streak[-1].started_at, timezone)}: eBay is not being watched.\n"
+        f"Last error: {_describe_error(streak[0])}\n"
+        "Check the log; a message follows when cycles work again."
+    )
+
+
+def _describe_error(run: RunRecord) -> str:
+    if run.error is None:
+        return "interrupted before the end of the cycle (process killed or timed out)"
+    # Errors come from exception texts: never let a credential reach the chat.
+    text = redact(run.error)
+    if len(text) > MAX_ERROR_LENGTH:
+        text = text[: MAX_ERROR_LENGTH - 3].rstrip() + "..."
+    return html.escape(text, quote=False)
+
+
+def _local_time(value: datetime, timezone: ZoneInfo) -> str:
+    return value.astimezone(timezone).strftime("%Y-%m-%d %H:%M")
 
 
 def format_overflow(listings: Sequence[Listing], cap: int) -> str:

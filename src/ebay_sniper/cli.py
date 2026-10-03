@@ -357,6 +357,7 @@ def _cmd_check_config(args: argparse.Namespace) -> int:
             f"Budget: EXCEEDED, {budget.total_calls_per_day} of {allowed}. "
             f"Use fewer queries or marketplaces, or {hint}."
         )
+    _print_health_settings(config)
     _print_database_stats(config)
     ok = _print_vision_status(config) and ok
 
@@ -372,6 +373,18 @@ def _cmd_check_config(args: argparse.Namespace) -> int:
     if args.live:
         ok = _live_checks(config, secrets) and ok
     return 0 if ok else 1
+
+
+def _print_health_settings(config: AppConfig) -> None:
+    runtime = config.runtime
+    if runtime.heartbeat_hour >= 0:
+        print(f"Heartbeat: daily after {runtime.heartbeat_hour}:00 ({config.telegram.timezone})")
+    else:
+        print("Heartbeat: off")
+    if runtime.failure_alert_after:
+        print(f"Failure alert: after {runtime.failure_alert_after} consecutive failed cycles")
+    else:
+        print("Failure alert: off")
 
 
 def _describe_environment(secrets: Secrets) -> str:

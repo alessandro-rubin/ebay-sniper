@@ -13,8 +13,10 @@ Status: milestones M1 to M3 are done (search, deduplication,
 keyword/condition/price rules, item details, Telegram notifications, photo
 filter with a local model, `calibrate`, `report` and the daily near-miss
 digest). The photo filter is on with provisional thresholds: no real listing
-of the watch has been scored yet. Next: Telegram buttons to label listings
-(M4) and deployment on an always-on machine (M5), see `CLAUDE.md`.
+of the watch has been scored yet. A daily heartbeat and an alert after
+repeated failed cycles report the health of the bot on Telegram. Next:
+Telegram buttons to label listings (M4) and deployment on an always-on
+machine (M5), see `CLAUDE.md`.
 
 ## Setup
 
@@ -122,6 +124,17 @@ listings kept out by the thresholds, closest first, so a threshold that is too
 strict cannot silently hide the watch. Each listing appears in one digest
 only; `digest_hour = -1` turns it off.
 
+**Health.** After two consecutive failed cycles (`failure_alert_after`: for
+example the eBay keys were rejected or every search failed) one Telegram alert
+is sent with the last error, and one more message when cycles work again. The
+first cycle after `heartbeat_hour` (9:00 by default) sends a daily status of
+the last 24 hours: cycles ok, partial and failed, Browse API calls, new
+listings, and a warning when far fewer cycles ran than `poll_interval_minutes`
+implies (computer asleep or off). Errors quoted in the messages have the
+secrets redacted. A bot that cannot start at all (missing `.env`, invalid
+configuration, computer off) cannot report anything: the heartbeat that does
+not arrive is the signal.
+
 ## Scheduling
 
 `run-once` is idempotent and refuses to start while another run is active, so
@@ -131,8 +144,9 @@ and call the executable in `.venv` rather than `uv run`, which syncs the
 environment at every start. `--log-file` keeps the logs in a rotated file
 instead of stderr, which a scheduler would discard (Windows) or mail (cron).
 
-Keep the schedule consistent with `poll_interval_minutes`: `run-once` does not
-read it, but `check-config` computes the API budget from it. Relative paths
+Keep the schedule consistent with `poll_interval_minutes`: `check-config`
+computes the API budget from it and the heartbeat the number of expected
+cycles. Relative paths
 inside `config.toml` (database, image cache, reference images) are resolved
 against the directory of `config.toml`. The exit code is 0 on success and 1
 when the cycle failed (for example every search failed or the eBay
@@ -186,8 +200,9 @@ Disable-ScheduledTask -TaskName ebay-sniper     # pause; Enable-ScheduledTask re
 Unregister-ScheduledTask -TaskName ebay-sniper -Confirm:$false
 ```
 
-A failing task (for example expired eBay keys) is not reported on Telegram
-yet: check the log or `LastTaskResult` now and then.
+Failed cycles are reported on Telegram (see **Health** above); a task that
+does not start at all shows up only as a missing heartbeat, or in
+`LastTaskResult`.
 
 ## Known limitations
 
