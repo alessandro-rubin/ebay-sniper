@@ -34,6 +34,7 @@ def engine(
     conditions: list[int] | None = None,
     max_total: str = "100",
     rates: dict[str, Decimal] | None = None,
+    flag_above: str | None = None,
 ) -> RuleEngine:
     return RuleEngine(
         RulesConfig(
@@ -41,7 +42,11 @@ def engine(
             flag_keywords=flag or [],
             flag_condition_ids=conditions or [],
         ),
-        PriceConfig(max_total=Decimal(max_total), exchange_rates=rates or {}),
+        PriceConfig(
+            max_total=Decimal(max_total),
+            flag_above_total=Decimal(flag_above) if flag_above else None,
+            exchange_rates=rates or {},
+        ),
     )
 
 
@@ -136,6 +141,37 @@ def test_price_cap_with_conversion() -> None:
     result = rules.evaluate(dear)
     assert result.verdict is Verdict.DROP
     assert result.reasons == ("total 120.00 USD (about 103.20 EUR) above the cap of 100.00 EUR",)
+
+
+def test_soft_cap_flags_between_the_two_caps() -> None:
+    rules = engine(max_total="300", flag_above="100")
+    at_soft_cap = make_listing(price=Money(Decimal("95"), "EUR"))  # 95 + 5 = 100
+    assert rules.evaluate(at_soft_cap).verdict is Verdict.PASS
+    above = make_listing(
+        price=Money(Decimal("104.01"), "EUR"), shipping=Money(Decimal("23.56"), "EUR")
+    )
+    result = rules.evaluate(above)
+    assert result.verdict is Verdict.FLAG
+    assert result.reasons == ("total 127.57 EUR above the soft cap of 100.00 EUR",)
+    at_cap = make_listing(price=Money(Decimal("295"), "EUR"))  # 295 + 5 = 300
+    assert rules.evaluate(at_cap).verdict is Verdict.FLAG
+
+
+def test_above_the_hard_cap_is_dropped_even_with_a_soft_cap() -> None:
+    rules = engine(max_total="300", flag_above="100")
+    result = rules.evaluate(make_listing(price=Money(Decimal("295.01"), "EUR")))
+    assert result.verdict is Verdict.DROP
+    assert result.reasons == ("total 300.01 EUR above the cap of 300.00 EUR",)
+
+
+def test_soft_cap_with_conversion() -> None:
+    rules = engine(max_total="300", flag_above="100", rates={"USD": Decimal("0.86")})
+    listing = make_listing(price=Money(Decimal("120"), "USD"), shipping=None)
+    result = rules.evaluate(listing)
+    assert result.verdict is Verdict.FLAG
+    assert result.reasons == (
+        "total 120.00 USD (about 103.20 EUR) above the soft cap of 100.00 EUR",
+    )
 
 
 def test_unknown_currency_is_flagged_not_dropped() -> None:

@@ -32,6 +32,9 @@ queries = [
     "(spider, spiders, spiderweb, spiderwebs, cobweb) (watch, watches, wristwatch, wristwatches)",
     "(orologio, orologi, orologino, reloj, relojes) (ragno, ragni, ragnatela, ragnatele, arana, telarana)",
     "(uhr, uhren, armbanduhr, damenuhr, montre, montres) (spinne, spinnen, spinnennetz, araignee)",
+    # English spider words with a watch word in another language: a real listing
+    # of the watch missed on 2026-11-08 mixed "orologio" and "spider web".
+    "(spider, spiderweb, spiderwebs, cobweb) (orologio, orologi, orologino, reloj, uhr, montre)",
 ]
 
 [price]
@@ -39,9 +42,13 @@ currency = "EUR"
 # Maximum total (item or current bid + shipping + import charges, when known).
 # Listings above it are dropped, and are not looked at again if the price
 # drops later.
-max_total = 100
+max_total = 300
+# Soft cap: a total above this and within max_total is notified with a warning.
+# A real listing of the watch at 127.57 EUR would have been dropped by a hard
+# cap of 100 (2026-11-08).
+flag_above_total = 100
 # Approximate value of one unit in EUR, only used to compare totals in other
-# currencies with max_total (EBAY_GB returns GBP, EBAY_US returns USD). Without
+# currencies with the caps (EBAY_GB returns GBP, EBAY_US returns USD). Without
 # a rate the cap is not checked and the listing is flagged. Update occasionally.
 exchange_rates = { USD = 0.86, GBP = 1.15 }
 

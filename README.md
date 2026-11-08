@@ -70,7 +70,8 @@ in `config.toml` to be notified of everything once instead.
 **Rules.** Every new listing gets a verdict from `[rules]` and `[price]`:
 `drop` (clear damage in the title or in the seller's condition notes, or a
 total above `max_total`) is recorded but not notified; `flag` (for example
-"not working" or condition 7000, often just a dead battery) is notified with a
+"not working" or condition 7000, often just a dead battery, or a total above
+the soft cap `flag_above_total`) is notified with a
 warning; `pass` is notified. Matching is case- and accent-insensitive on whole
 words, with `*` for prefixes; a drop keyword preceded by a negation ("no
 cracked crystal") only flags. Listings that pass get one `getItem` call
@@ -215,10 +216,10 @@ does not start at all shows up only as a missing heartbeat, or in
   the approximate `exchange_rates` of `config.toml`.
 - A listing dropped for its price is not evaluated again if the seller later
   lowers the price.
-- The photo thresholds were calibrated on curated reference images only: no
-  listing of the wanted watch was online while the filter was built, so how
-  it scores on real eBay photos is unknown. Lots and photos where the watch is
-  small are the expected weak spot; the near-miss digest is the safety net.
+- The photo thresholds were calibrated on curated reference images only. The
+  one real listing of the wanted watch scored so far cleared them easily, but
+  a single listing says little about recall. Lots and photos where the watch
+  is small are the expected weak spot; the near-miss digest is the safety net.
 
 ## Development
 

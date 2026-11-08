@@ -11,6 +11,8 @@ towards notifying:
   gebrochen", "senza vetro rotto") only flags the listing;
 - a total that cannot be compared with the cap (unknown currency) is flagged,
   not dropped;
+- a total between the soft cap (``flag_above_total``) and ``max_total`` is
+  flagged, not dropped;
 - the seller's full description is not checked, only the title and the
   condition notes: descriptions are full of boilerplate.
 """
@@ -101,6 +103,11 @@ class RuleEngine:
         self._flag_conditions = {str(condition) for condition in rules.flag_condition_ids}
         self._converter = CurrencyConverter(price.currency, price.exchange_rates)
         self._max_total = Money(price.max_total, price.currency)
+        self._flag_above = (
+            None
+            if price.flag_above_total is None
+            else Money(price.flag_above_total, price.currency)
+        )
 
     @property
     def converter(self) -> CurrencyConverter:
@@ -140,9 +147,12 @@ class RuleEngine:
         converted = self._converter.convert(total)
         if converted is None:
             flags.append(f"no exchange rate for {total.currency}, price cap not checked")
-        elif converted.value > self._max_total.value:
-            shown = str(total) if converted is total else f"{total} (about {converted})"
+            return
+        shown = str(total) if converted is total else f"{total} (about {converted})"
+        if converted.value > self._max_total.value:
             drops.append(f"total {shown} above the cap of {self._max_total}")
+        elif self._flag_above is not None and converted.value > self._flag_above.value:
+            flags.append(f"total {shown} above the soft cap of {self._flag_above}")
 
 
 def _compile_all(keywords: Iterable[str]) -> list[Keyword]:

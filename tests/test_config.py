@@ -133,6 +133,8 @@ def test_details_can_be_disabled(tmp_path: Path) -> None:
     [
         ("{ USD = 0.86 }", "{ usd = 0.86 }", "ISO 4217"),
         ("{ USD = 0.86 }", "{ USD = 0 }", "positive"),
+        ("max_total = 400", "max_total = 400\nflag_above_total = 400", "must be below max_total"),
+        ("max_total = 400", "max_total = 400\nflag_above_total = 0", "flag_above_total"),
         ('"missing hand*"', '"  *  "', "without letters"),
         ('"missing hand*"', '"missing*hand"', "only allowed once, at the end"),
         ("flag_condition_ids = [7000]", 'flag_condition_ids = ["used"]', "flag_condition_ids"),
