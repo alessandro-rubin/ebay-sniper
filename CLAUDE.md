@@ -124,7 +124,8 @@ Behaviour implemented in M1 and M2 worth knowing before changing it:
   `conditionDescription` are checked, never the full description.
 - **Price cap**: `Listing.total` in the marketplace currency, converted with
   `price.exchange_rates`; without a rate the listing is flagged, not dropped.
-  Auctions use the current bid.
+  Above `price.max_total` it is dropped, between `price.flag_above_total` (soft
+  cap, optional) and `max_total` it is flagged. Auctions use the current bid.
 
 - **Seeding**: the first successful run of a (query, marketplace) pair stores
   its results as `seeded` without notifying them; only later cycles notify.
@@ -268,8 +269,8 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   of the new listings of the generic English query). Never drop on other
   watch brands: a lot ("lotto orologi") can contain the item.
 - `flag` (notify with a warning, do not drop): "not working", "for parts",
-  "needs battery" and condition 7000. On a quartz watch this is often just a
-  dead battery.
+  "needs battery" and condition 7000 (on a quartz watch this is often just a
+  dead battery), and totals above the soft cap.
 - Rules must be case- and accent-insensitive and multilingual (IT, EN, DE, FR, ES).
 
 **Vision** (optional extra `vision`):
@@ -309,10 +310,14 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
     explains the probes for readers.
 - On real traffic (619 stored listings, 2026-10-01): other Futura watches
   have a median `match` of 0.68 (max 0.80), other spider-themed listings
-  0.61 (max 0.815, an Orient spider web dial). No listing of the target was
-  online, so recall on real eBay photos is still unmeasured; lots and photos
-  where the watch is small are the expected weak spot (consider multi-crop
-  scoring if a real listing scores low). When the labelled set grows (roughly
+  0.61 (max 0.815, an Orient spider web dial).
+- First real listing of the target (2026-11-08, wanted variant confirmed by
+  the user, two photos, never returned by the searches and above the old
+  100 EUR cap): match 0.847, colour +0.028, web +0.042. Its second photo alone
+  (0.798, -0.005, -0.002) would have failed `web`. One listing says little
+  about recall; lots and photos where the watch is small are the expected weak
+  spot (consider multi-crop scoring if a real listing scores low). When the
+  labelled set grows (roughly
   30 or more per class) switch to logistic regression or kNN on embeddings.
 - `vision.filter = false` is shadow mode: scores are computed, stored and
   shown in the notifications, nothing is filtered. With the filter on,
@@ -370,8 +375,8 @@ result totals and, on small queries, the actual sets of `legacyItemId`:
   (match 0.70, colour -0.03), looser than the calibrated 0.763 / -0.014
   because no real listing of the watch could be measured. `web` threshold
   0.005 since 2026-10-02 (calibrated 0.007): 31 of 667 stored listings pass
-  instead of 93. Follow-up: when a real listing of the target is scored,
-  recalibrate and tighten.
+  instead of 93. Follow-up: when a few real listings of the target have been
+  scored, recalibrate and tighten.
 - **M4**: Telegram feedback buttons feeding the labelled set.
 - **M5**: deployment on an always-on machine (Linux systemd timer, Docker, or
   Windows Task Scheduler). Done on 2026-10-03: Windows Task Scheduler on the
@@ -429,9 +434,7 @@ images per new listing.
 
 - Is the silver case wanted whatever the dial brand (Futura, Limma, Moulin)?
 - Photo thresholds (0.70 / -0.03 / 0.005) are provisional: tighten them once
-  a real listing of the watch has been scored.
-- `max_total` is 100 EUR, a hard drop: a soft cap (flag between 100 and a
-  higher hard cap) was proposed and not decided yet.
+  a few real listings of the watch have been scored (one so far).
 - Which always-on machine will run the bot (M5). Since 2026-10-03 it runs
   hourly (`poll_interval_minutes = 60`) on the user's Windows PC through
   Task Scheduler (S4U task, see the README section Scheduling); a sleeping

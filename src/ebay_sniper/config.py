@@ -18,7 +18,7 @@ import tomllib
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
@@ -30,6 +30,7 @@ from pydantic import (
     ValidationError,
     ValidationInfo,
     field_validator,
+    model_validator,
 )
 from pydantic_core import ErrorDetails
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -158,10 +159,14 @@ def validate_query(query: str) -> None:
 
 class PriceConfig(_Section):
     currency: str = Field(default="EUR", pattern=r"^[A-Z]{3}$")
-    # Maximum total (item + shipping + import charges) in `currency`.
+    # Maximum total (item + shipping + import charges) in `currency`: listings
+    # above it are dropped.
     max_total: Decimal = Field(gt=0)
+    # Soft cap: a total above this and within `max_total` is notified with a
+    # warning. None turns it off.
+    flag_above_total: Decimal | None = Field(default=None, gt=0)
     # Approximate value of one unit of each other currency in `currency`, used
-    # only to compare totals with `max_total`.
+    # only to compare totals with the caps.
     exchange_rates: dict[str, Decimal] = Field(default_factory=dict)
 
     @field_validator("exchange_rates")
@@ -173,6 +178,12 @@ class PriceConfig(_Section):
             if rate <= 0:
                 raise ValueError(f"exchange rate for {code} must be positive")
         return value
+
+    @model_validator(mode="after")
+    def _check_caps(self) -> Self:
+        if self.flag_above_total is not None and self.flag_above_total >= self.max_total:
+            raise ValueError("flag_above_total must be below max_total")
+        return self
 
 
 class RulesConfig(_Section):
